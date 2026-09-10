@@ -1,0 +1,22 @@
+[project]
+name = "simple-agent"
+version = "0.1.0"
+description = "A small, self-improving agent core — the Hermes design at 1/100th the size"
+requires-python = ">=3.10"
+dependencies = []          # standard library only, on purpose
+
+[project.scripts]
+simple-agent = "simple_agent.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["simple_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
