@@ -30,6 +30,9 @@ PROVIDER_DEFAULT_MODELS = {
 
 KEYS = (
     "provider",
+    "engine",
+    "pi_command",
+    "pi_args",
     "model",
     "review_model",
     "learning",
@@ -47,6 +50,11 @@ KEYS = (
 @dataclass
 class Config:
     provider: str = "anthropic"
+    # Who runs the turn: "loop" (this repo) or "pi" (an external harness; see
+    # engines/pi.py). pi_args is passed through, e.g. its --provider/--model.
+    engine: str = "loop"
+    pi_command: str = "pi"
+    pi_args: str = ""
     model: str = ""  # empty = the provider's default
     review_model: str = ""
     learning: bool = True  # background memory/skill review after each turn
