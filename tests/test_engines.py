@@ -73,8 +73,13 @@ def test_pi_answers_and_the_transcript_stays_ours(config, fake_pi):
 
     argv = json.loads(argv_file.read_text())
     assert argv[:3] == ["-p", "--mode", "json"]
-    assert argv[argv.index("--tools") + 1] == "bash,edit,read,write"
-    assert "--append-system-prompt" in argv and "--provider" in argv
+    tools = argv[argv.index("--tools") + 1].split(",")
+    assert tools[:4] == ["bash", "edit", "read", "write"]  # pi's own
+    assert {"memory_save", "memory_search", "skill_view", "session_search"} <= set(tools[4:])  # via the bridge
+    assert argv[argv.index("-e") + 1].endswith("pi_bridge.ts")
+    assert "--append-system-prompt" in argv
+    # pi_args set --provider, so ours is not added; the model still is
+    assert argv.count("--provider") == 1 and argv[argv.index("--model") + 1] == config.model
     assert argv[-1].endswith("list files")
     session = argv[argv.index("--session") + 1]
     assert session.startswith(str(config.home / "pi"))
@@ -82,13 +87,32 @@ def test_pi_answers_and_the_transcript_stays_ours(config, fake_pi):
 
 def test_a_narrowed_toolset_is_never_widened_under_pi(config, fake_pi):
     engine, argv_file = fake_pi
-    Agent(config, engine=engine, provider=Unused(), tools=["skill_view"]).run("hi")
+    Agent(config, engine=engine, provider=Unused(), tools=[]).run("hi")
     argv = json.loads(argv_file.read_text())
-    assert "--no-tools" in argv and "--tools" not in argv
+    assert "--no-tools" in argv and "--tools" not in argv and "-e" not in argv
 
-    Agent(config, engine=engine, provider=Unused(), tools=["read_file", "memory"], resume=False).run("hi")
+    agent = Agent(config, engine=engine, provider=Unused(), tools=["read_file", "skill_view"], resume=False)
+    agent.run("hi")
     argv = json.loads(argv_file.read_text())
-    assert argv[argv.index("--tools") + 1] == "read"
+    assert argv[argv.index("--tools") + 1] == "read,skill_view"
+    server = json.loads(engine.bridge_env(agent)["SIMPLE_AGENT_MCP_COMMAND"])
+    assert server[server.index("--tools") + 1] == "skill_view"  # the bridge is narrowed too
+
+
+def test_the_configured_llm_reaches_pi_without_repeating_it(tmp_path):
+    config = Config(home=tmp_path, provider="bedrock", learning=False)
+    agent = Agent(config, engine=PiEngine(), provider=Unused())
+
+    argv = PiEngine().build_command(agent, "hi")
+
+    assert argv[argv.index("--provider") + 1] == "amazon-bedrock"
+    assert argv[argv.index("--model") + 1] == "jp.anthropic.claude-sonnet-4-6"
+
+
+def test_an_impossible_combination_fails_at_start(tmp_path):
+    config = Config(home=tmp_path, provider="ollama", model="m", review_model="m")
+    with pytest.raises(RuntimeError, match="cannot run provider 'ollama'"):
+        Agent(config, engine=PiEngine(), provider=Unused())
 
 
 def test_pi_failure_raises_but_the_user_message_is_kept(config, tmp_path):

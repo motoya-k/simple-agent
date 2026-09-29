@@ -48,6 +48,19 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 
 プロバイダやエンジンを足すときは、ファイルを 1 つ追加し、登録表に 1 行書くだけです。ループには手を入れません。
 
+### 自由に組み合わせる
+
+ハーネス・LLM・記憶の 3 つは、互いに独立して選べます。ハーネスが受け持つのはループだけです。モデル、記憶、ツールの許可は simple-agent が一度だけ決めて、ハーネスに渡します。
+
+```yaml
+# ~/.simple-agent/config.yaml
+engine: pi              # ループを回すハーネス
+provider: bedrock       # LLM。pi には --provider amazon-bedrock として渡る
+memory_backend: mem0    # 記憶。pi も simple-agent のツール経由で読み書きする
+```
+
+外部のハーネスは、`simple-agent --mcp` を通して記憶・スキル・過去の会話の検索を使います。これは標準入出力で動く MCP サーバーで、そのルートで許可されたツールだけを公開します。pi は MCP に対応していないので、同梱の pi 拡張機能が橋渡しをします。MCP に対応したハーネスなら、`{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}` のように直接つなげます。ハーネスが設定された LLM を扱えない組み合わせは、起動した時点でエラーになります。
+
 ## メール
 
 ```bash

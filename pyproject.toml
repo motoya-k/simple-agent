@@ -18,6 +18,9 @@ postgres = ["psycopg[binary]>=3.1"]  # SIMPLE_AGENT_DATABASE_URL; see state_post
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.package-data]
+simple_agent = ["engines/*.ts"]
+
 [tool.setuptools.packages.find]
 include = ["simple_agent*"]
 

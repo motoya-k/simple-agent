@@ -54,6 +54,26 @@ Settings come from environment variables or `~/.simple-agent/config.yaml`
 Adding a provider or an engine is one new file plus one line in a registry —
 never a change to the loop.
 
+### Mix and match
+
+The three big choices are independent. The harness owns only the loop; the
+model, memory, and tool permissions are chosen once and handed to it.
+
+```yaml
+# ~/.simple-agent/config.yaml
+engine: pi              # who runs the loop
+provider: bedrock       # which LLM — passed to pi as --provider amazon-bedrock
+memory_backend: mem0    # which memory — pi reads and writes it through our tools
+```
+
+External harnesses reach memory, skills, and session search through
+`simple-agent --mcp`, an MCP server on stdio that serves only the tools the
+current route allows. pi has no MCP client, so a bundled pi extension bridges
+to it. Any MCP-capable harness can use it directly, e.g.
+`{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}`.
+An impossible combination (an engine that cannot run the configured provider)
+fails at start.
+
 ## Email
 
 ```bash
