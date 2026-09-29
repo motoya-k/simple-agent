@@ -1,66 +1,180 @@
 """Extension seams — declared here, implemented nowhere.
 
-Hermes carries four capabilities this repo deliberately does not implement:
-message gateways, subagent delegation, a rich TUI, and a multi-provider adapter
-matrix.  Each is a large surface, and none of them belongs in the core.
+What is left unimplemented has shrunk.  Conversation identity, the transcript
+that survives a restart, the per-conversation agent cache, and the async
+bridge now live in real modules — :mod:`simple_agent.session`,
+:mod:`simple_agent.state`, :mod:`simple_agent.registry`,
+:mod:`simple_agent.context` — because they turned out to be small, and because
+getting them wrong is expensive in ways that only show up in production.
 
-What is worth keeping at this size is the *shape* — the exact boundary each one
-would attach to.  These abstract classes are that shape.  Nothing in the running
-agent imports them; they are here so that adding a capability is a new file
-implementing an interface, never a change to ``agent.py`` or ``loop.py``.
+Three capabilities remain declared but not built: transport to and from chat
+platforms (split into Source, Sink and Router), delegation to subagents, and a
+renderer richer than plain text.  Each is a large surface, and none of them belongs in the core.
 
-Read DESIGN.md alongside this file: it explains what each capability does in
-Hermes and which decisions are the load-bearing ones.
+What is worth keeping at this size is the *shape* — the exact boundary each
+one would attach to.  The abstract classes below are that shape.  Nothing in
+the running agent imports them; they are here so that adding a capability is a
+new file implementing an interface, never a change to ``agent.py`` or
+``loop.py``.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, AsyncIterator
+
+from .session import SessionSource, build_session_key
 
 
 # --------------------------------------------------------------------------
-# 1. Gateway — one process, many chat platforms
+# 1. Transport — where messages come from, where answers go, and which is which
 # --------------------------------------------------------------------------
+# Three pieces rather than one adapter per platform.  An adapter that both
+# receives and sends quietly fixes the rule "answer where the message came
+# from"; splitting them lets a host receive by email and answer in Slack, or
+# receive and not answer at all, by configuration alone.
+#
+# There is no fourth box for side effects.  Something the host does on every
+# message is a Sink plus a Route; something the agent decides to do based on
+# what it read is a tool.
+
+
 @dataclass(frozen=True)
 class InboundMessage:
+    """One message as a platform handed it over.
+
+    Deliberately thin: the platform-specific work — deciding whether a message
+    was addressed to the bot, pulling text out of rich blocks, downloading
+    attachments — belongs in the Source, not in a shared struct.
+    """
+
     platform: str
     chat_id: str
     user_id: str
     text: str
-    thread_id: str | None = None
+    chat_type: str = "dm"
+    user_name: str = ""
+    chat_name: str = ""
+    thread_id: str = ""
+    message_id: str = ""
     attachments: tuple[str, ...] = ()
 
-    def session_key(self) -> str:
-        """The identity of a conversation.
+    def source(self) -> SessionSource:
+        return SessionSource(
+            platform=self.platform,
+            chat_id=self.chat_id,
+            chat_type=self.chat_type,
+            user_id=self.user_id,
+            user_name=self.user_name,
+            chat_name=self.chat_name,
+            thread_id=self.thread_id,
+            message_id=self.message_id,
+        )
 
-        The single most important line in a gateway. Every wrong answer of the
-        form "the bot replied to the wrong person" or "it lost the thread" is a
-        bug in this key. Group chats key on the thread; DMs key on the user;
-        every platform is namespaced so ids from different platforms can never
-        collide.
+    def session_key(self, **rules: Any) -> str:
+        """The identity of this conversation.
+
+        Delegates to :func:`simple_agent.session.build_session_key` rather than
+        assembling a key here. Two places that both build keys eventually build
+        two *different* keys, and the symptom is a thread that answers itself
+        twice or loses its history halfway through.
         """
-        parts = [self.platform, self.chat_id, self.user_id, self.thread_id or "-"]
-        return ":".join(parts)
+        return build_session_key(self.source(), **rules)
+
+    def reply_to(self) -> "Destination":
+        """The place this message came from, as somewhere to answer."""
+        return Destination(self.platform, self.chat_id, self.thread_id)
 
 
-class PlatformAdapter(ABC):
-    """One class per chat platform. The runner never learns their differences."""
+@dataclass(frozen=True)
+class Destination:
+    """Somewhere an answer can be delivered: a chat, optionally a thread in it."""
+
+    platform: str
+    chat_id: str
+    thread_id: str = ""
+
+
+class Source(ABC):
+    """Receives messages from one platform. It never sends anything.
+
+    ``messages`` covers both kinds of transport: a polling source (IMAP) loops
+    and sleeps inside it, a push source (a websocket) yields as events arrive.
+
+    ``ack`` is called once the host has finished with a message, successfully
+    or not.  A source that can be asked for the same message twice — an inbox
+    polled after a restart — records it here, so a crash mid-turn replays the
+    message instead of losing it.
+    """
 
     platform: str
 
     @abstractmethod
-    async def connect(self) -> None: ...
+    def messages(self) -> AsyncIterator[InboundMessage]: ...
+
+    async def ack(self, message: InboundMessage) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class Sink(ABC):
+    """Delivers answers to one platform. It never receives anything.
+
+    A Sink implements everything its platform can do; whether a given message
+    is answered, and where, is the Router's decision.  "Email does not reply"
+    is a routing policy, not a missing capability.
+    """
+
+    platform: str
 
     @abstractmethod
-    async def receive(self) -> Iterable[InboundMessage]: ...
+    async def send(self, to: Destination, text: str) -> None: ...
+
+    async def close(self) -> None:
+        return None
+
+    # -- progress, without filling the channel with it ------------------
+    # A tool-by-tool commentary that reads fine in a terminal reads as spam in
+    # a shared channel, where every line is permanent and everyone sees it.
+    # These exist so a sink can show that work is happening on a surface that
+    # is not the message stream: a reaction on the triggering message, a
+    # status line beside the bot's name, a typing indicator. The defaults do
+    # nothing, which is right for a platform with no such surface — and for a
+    # message that arrived on a different platform than this sink's.
+
+    async def on_turn_start(self, message: InboundMessage, to: Destination) -> None:
+        return None
+
+    async def on_turn_end(self, message: InboundMessage, to: Destination, ok: bool) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class Route:
+    """What the host does with one inbound message.
+
+    ``to`` empty means receive and answer nobody — the agent still runs, and
+    anything it should do in the world it does through tools.  ``tools`` narrows
+    the toolset for messages on this route (``None`` keeps the default set);
+    it is how a route from an untrusted inbox runs without a terminal.
+    """
+
+    to: tuple[Destination, ...] = ()
+    tools: tuple[str, ...] | None = None
+
+
+class Router(ABC):
+    """Decides, per message, whether to run the agent and where the answer goes.
+
+    Returning ``None`` drops the message before the agent sees it — the place
+    for a sender allowlist, so an unknown address never costs a model call.
+    """
 
     @abstractmethod
-    async def send(self, chat_id: str, text: str, *, thread_id: str | None = None) -> None: ...
-
-    @abstractmethod
-    async def disconnect(self) -> None: ...
+    def route(self, message: InboundMessage) -> Route | None: ...
 
 
 # --------------------------------------------------------------------------

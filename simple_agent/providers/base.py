@@ -8,9 +8,9 @@ Design philosophy (carried over from Hermes):
 
 Hermes ships adapters for ``chat_completions`` / ``anthropic_messages`` /
 ``bedrock_converse`` / ``gemini_native`` / ``codex_responses`` plus a fallback
-chain across ~30 provider plugins.  This repo implements exactly one adapter
-(Anthropic) and keeps the seam so a second one is an additive file, not a
-change to the loop.  See DESIGN.md § Providers.
+chain across ~30 provider plugins.  This repo implements four — Anthropic
+Messages, Bedrock Converse, Gemini native and OpenAI Responses — and each is
+one additive file, never a change to the loop.
 
 Normalized wire format
 ----------------------

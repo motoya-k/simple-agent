@@ -1,4 +1,4 @@
-"""Anthropic Messages adapter — the one concrete provider in this repo.
+"""Anthropic Messages adapter.
 
 Zero dependencies on purpose: ``urllib`` keeps the whole request/response path
 visible in one screen.  Swapping in the official SDK is a drop-in change that

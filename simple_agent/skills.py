@@ -1,11 +1,22 @@
-"""Skills: procedures the agent writes for itself.
+"""Skills: abstract procedures the agent writes for itself.
+
+A skill is *how to do a class of task* — debug a flaky test, ship a release,
+answer a customer escalation — written so it would still be correct at
+another company.  It is not where team facts go.  "Staging is ``stg-01``",
+"Ops owns deploys", "we release on Fridays" are long-term memory (see
+:mod:`simple_agent.memory`); the skill says "the staging host", "the deploy
+owner", "the team's release day", and the agent recalls the values when it
+runs.  Kept apart, the two improve independently: a skill sharpens with every
+use, and a fact is corrected once and every skill that needs it picks it up.
+:func:`find_specifics` flags the most obvious leaks (URLs, addresses, emails)
+when a skill is written.
 
 A skill is a directory under ``~/.simple-agent/skills/<name>/`` containing a
 ``SKILL.md`` with YAML-ish frontmatter::
 
     ---
-    name: deploy-staging
-    description: How to ship this repo to staging, including the gotchas.
+    name: debug-flaky-test
+    description: Isolate a test that fails intermittently, then fix or quarantine it.
     status: active
     uses: 4
     updated: 2026-09-10
@@ -34,6 +45,35 @@ STALE_AFTER = timedelta(days=30)
 ARCHIVE_AFTER = timedelta(days=90)
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+
+# Values that belong to one team, not to a procedure. Not exhaustive — names of
+# people and systems cannot be caught by a regex — just the ones that can.
+_SPECIFIC_RES = (
+    re.compile(r"https?://[^\s)>\]]+"),
+    re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+)
+
+
+def find_specifics(text: str) -> list[str]:
+    """Team-specific values in a skill body, which belong in long-term memory."""
+    found: list[str] = []
+    for pattern in _SPECIFIC_RES:
+        for match in pattern.findall(text):
+            if match not in found:
+                found.append(match)
+    return found
+
+
+def _abstraction_warning(body: str) -> str:
+    specifics = find_specifics(body)
+    if not specifics:
+        return ""
+    return (
+        f" Warning: it contains team-specific values ({', '.join(specifics[:5])}). "
+        "Skills should be abstract: save these with memory_save and refer to them "
+        "by role in the skill (e.g. 'the staging URL')."
+    )
 
 
 class Skill:
@@ -96,7 +136,7 @@ class SkillLibrary:
         skill.meta = {"name": name, "description": description.strip(), "status": "active", "uses": "0"}
         skill.body = body.strip()
         skill.save()
-        return f"Created skill {name!r}."
+        return f"Created skill {name!r}." + _abstraction_warning(skill.body)
 
     def patch(self, name: str, old: str, new: str) -> str:
         skill = self.get(name)
@@ -107,7 +147,7 @@ class SkillLibrary:
         skill.body = skill.body.replace(old, new, 1)
         skill.meta["status"] = "active"
         skill.save()
-        return f"Patched {name!r}."
+        return f"Patched {name!r}." + _abstraction_warning(new)
 
     def append(self, name: str, text: str) -> str:
         skill = self.get(name)
@@ -116,7 +156,7 @@ class SkillLibrary:
         skill.body = f"{skill.body.rstrip()}\n\n{text.strip()}"
         skill.meta["status"] = "active"
         skill.save()
-        return f"Appended to {name!r}."
+        return f"Appended to {name!r}." + _abstraction_warning(text)
 
     def mark_used(self, name: str) -> None:
         skill = self.get(name)

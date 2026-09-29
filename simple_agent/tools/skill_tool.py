@@ -27,10 +27,13 @@ def register(registry, library) -> None:
     @registry.tool(
         name="skill_manage",
         description=(
-            "Create or improve a skill — a durable procedure for a CLASS of task. "
-            "Write one when a non-obvious workflow succeeded, when an error was worked "
-            "around, or when the user corrected how you work. Prefer patching an "
-            "existing skill over creating a near-duplicate."
+            "Create or improve a skill — an abstract procedure for a CLASS of task "
+            "that would still be correct at another company. Write one when a "
+            "non-obvious method succeeded, when an error was worked around, or when "
+            "the order of steps was corrected. Keep team facts out: hosts, URLs, "
+            "people, owners and conventions go to long-term memory (memory_save), and "
+            "the skill refers to them by role ('the staging host'). Prefer patching "
+            "an existing skill over creating a near-duplicate."
         ),
         parameters={
             "type": "object",

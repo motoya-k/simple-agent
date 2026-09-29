@@ -91,7 +91,7 @@ class ToolRegistry:
 
 
 def build_registry(config, memory, skills, store) -> ToolRegistry:
-    """Assemble the default toolset."""
+    """Assemble the default toolset. ``memory`` is long-term memory."""
     from . import files, memory_tool, session_search, skill_tool, terminal
 
     registry = ToolRegistry()

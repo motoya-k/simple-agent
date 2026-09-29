@@ -9,8 +9,9 @@ from .base import Provider, Response, ToolCall
 
 _REGISTRY: dict[str, str] = {
     "anthropic": "simple_agent.providers.anthropic:AnthropicProvider",
-    # "openai":  "simple_agent.providers.openai_compat:OpenAICompatProvider",
-    # "gemini":  "simple_agent.providers.gemini:GeminiProvider",
+    "bedrock": "simple_agent.providers.bedrock:BedrockProvider",
+    "gemini": "simple_agent.providers.gemini:GeminiProvider",
+    "openai": "simple_agent.providers.openai_responses:OpenAIResponsesProvider",
 }
 
 

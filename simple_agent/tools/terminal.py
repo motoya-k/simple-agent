@@ -5,10 +5,16 @@ exported environment, shell functions, and working directory captured at the end
 of the previous call; afterwards we snapshot them again.  The model experiences
 one continuous shell, but no long-lived process can wedge the agent.
 
+**The snapshot belongs to one conversation.**  Kept in a single shared
+directory, every conversation in the process would inherit whatever the last
+one exported and wherever it had ``cd``-ed — one person's working directory
+silently becoming another person's.  So the snapshot path is derived from the
+session key at call time (see :mod:`simple_agent.context`), which also means a
+resumed thread walks back into the shell it left.
+
 Hermes puts this behind ``BaseEnvironment`` and ships local / docker / ssh /
 singularity / modal / daytona backends that each implement only ``_run_bash``.
 This repo implements the local one and keeps the seam visible below.
-See DESIGN.md § Terminal backends.
 """
 
 from __future__ import annotations
@@ -16,7 +22,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from ..context import current_session_key
+from ..session import session_slug
+
 MAX_OUTPUT = 30_000
+DEFAULT_LANE = "default"
 
 
 class LocalEnvironment:
@@ -25,29 +35,36 @@ class LocalEnvironment:
     def __init__(self, state_dir: Path, timeout: int = 120) -> None:
         self.state_dir = state_dir
         self.timeout = timeout
-        self.env_file = state_dir / "env.sh"
-        self.fn_file = state_dir / "functions.sh"
-        self.cwd_file = state_dir / "cwd"
 
-    def _script(self, command: str) -> str:
+    def lane(self, session_key: str = "") -> Path:
+        """The directory holding one conversation's shell snapshot."""
+        key = session_key or current_session_key()
+        path = self.state_dir / (session_slug(key) if key else DEFAULT_LANE)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _script(self, command: str, lane: Path) -> str:
+        env_file = lane / "env.sh"
+        fn_file = lane / "functions.sh"
+        cwd_file = lane / "cwd"
         return f"""
-[ -f {self.env_file} ] && . {self.env_file} 2>/dev/null
-[ -f {self.fn_file} ]  && . {self.fn_file}  2>/dev/null
-[ -f {self.cwd_file} ] && cd "$(cat {self.cwd_file})" 2>/dev/null
+[ -f {env_file} ] && . {env_file} 2>/dev/null
+[ -f {fn_file} ]  && . {fn_file}  2>/dev/null
+[ -f {cwd_file} ] && cd "$(cat {cwd_file})" 2>/dev/null
 
 {command}
 __exit=$?
 
-declare -px > {self.env_file} 2>/dev/null
-declare -f  > {self.fn_file}  2>/dev/null
-pwd > {self.cwd_file}
+declare -px > {env_file} 2>/dev/null
+declare -f  > {fn_file}  2>/dev/null
+pwd > {cwd_file}
 exit $__exit
 """
 
     def run(self, command: str, timeout: int | None = None) -> str:
         try:
             proc = subprocess.run(
-                ["bash", "-lc", self._script(command)],
+                ["bash", "-lc", self._script(command, self.lane())],
                 capture_output=True,
                 text=True,
                 timeout=timeout or self.timeout,
@@ -72,7 +89,7 @@ exit $__exit
 
 
 def register(registry, config) -> None:
-    env = LocalEnvironment(config.shell_state_dir, config.command_timeout)
+    env = LocalEnvironment(config.shell_state_dir)
 
     @registry.tool(
         name="terminal",
@@ -87,7 +104,7 @@ def register(registry, config) -> None:
                 "command": {"type": "string", "description": "The bash command to run."},
                 "timeout": {
                     "type": "integer",
-                    "description": f"Seconds before the command is killed (default {config.command_timeout}).",
+                    "description": f"Seconds before the command is killed (default {env.timeout}).",
                 },
             },
             "required": ["command"],

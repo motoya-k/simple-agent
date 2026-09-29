@@ -1,36 +1,71 @@
-"""Configuration — env first, optional JSON file second, defaults last."""
+"""Configuration — env first, ``~/.simple-agent/config.yaml`` second, defaults last.
+
+Only what a user actually changes lives here.  Everything else (loop limits,
+compaction thresholds, timeouts) is a default on the code that uses it.
+"""
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .registry import DEFAULT_IDLE_SECONDS, DEFAULT_MAX_AGENTS
 
 HOME = Path(os.environ.get("SIMPLE_AGENT_HOME", Path.home() / ".simple-agent"))
 
 # The agent's own model, and a cheaper one for the background reviewer that runs
 # after every turn. Splitting them is what makes always-on learning affordable.
-DEFAULT_MODEL = "claude-opus-5"
-DEFAULT_REVIEW_MODEL = "claude-haiku-4-5-20251001"
+# Model ids are provider-specific, so each provider brings its own pair.  The
+# Bedrock ones are Japan inference profiles: requests stay in Tokyo/Osaka.
+PROVIDER_DEFAULT_MODELS = {
+    "anthropic": ("claude-opus-5", "claude-haiku-4-5-20251001"),
+    "bedrock": (
+        "jp.anthropic.claude-sonnet-4-6",
+        "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ),
+    "gemini": ("gemini-2.5-pro", "gemini-2.5-flash"),
+    "openai": ("gpt-5-codex", "gpt-5-mini"),
+}
+
+KEYS = (
+    "provider",
+    "model",
+    "review_model",
+    "learning",
+    "database_url",
+    "memory_backend",
+    "memory_namespace",
+)
 
 
 @dataclass
 class Config:
     provider: str = "anthropic"
-    model: str = DEFAULT_MODEL
-    review_model: str = DEFAULT_REVIEW_MODEL
-    max_tokens: int = 8192
-
-    # Runaway guards on the loop. See loop.py.
-    max_iterations: int = 90
-    token_budget: int = 2_000_000
-    max_parallel_tools: int = 8
-    command_timeout: int = 120
-
+    model: str = ""  # empty = the provider's default
+    review_model: str = ""
     learning: bool = True  # background memory/skill review after each turn
-
+    # Jev yes/no probability below which a review pass is skipped. Only used
+    # when TYPESAFE_API_KEY is set. See review_gate.py.
+    review_gate_threshold: float = 0.15
+    # Empty = SQLite at state_db. A postgresql:// URL moves the transcript
+    # store to Postgres; see state_postgres.py for when that is worth it.
+    database_url: str = ""
+    # Long-term memory: the team's shared knowledge. local | mem0 | hindsight.
+    # The namespace is the team or org it belongs to — mem0's app_id,
+    # Hindsight's bank. See memory.py.
+    memory_backend: str = "local"
+    memory_namespace: str = "default"
+    # How many conversations a message host keeps live at once, and how long an
+    # idle one stays resident. See registry.AgentRegistry.
+    max_agents: int = DEFAULT_MAX_AGENTS
+    agent_idle_seconds: float = DEFAULT_IDLE_SECONDS
     home: Path = field(default_factory=lambda: HOME)
+
+    def __post_init__(self) -> None:
+        model, review_model = PROVIDER_DEFAULT_MODELS.get(self.provider, ("", ""))
+        self.model = self.model or model
+        self.review_model = self.review_model or review_model
 
     @property
     def memories_dir(self) -> Path:
@@ -50,28 +85,34 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        cfg = cls()
+        values = _read_flat_yaml(HOME / "config.yaml")
+        unknown = sorted(set(values) - set(KEYS))
+        if unknown:
+            raise ValueError(f"Unknown config.yaml keys: {', '.join(unknown)}")
+        for key in KEYS:
+            if os.environ.get(f"SIMPLE_AGENT_{key.upper()}"):
+                values[key] = os.environ[f"SIMPLE_AGENT_{key.upper()}"]
+        if "learning" in values:
+            values["learning"] = values["learning"].lower() not in {"0", "false", "no", "off"}
 
-        path = cfg.home / "config.json"
-        if path.exists():
-            for key, value in json.loads(path.read_text("utf-8")).items():
-                if hasattr(cfg, key) and key != "home":
-                    setattr(cfg, key, value)
-
-        env_map = {
-            "SIMPLE_AGENT_PROVIDER": "provider",
-            "SIMPLE_AGENT_MODEL": "model",
-            "SIMPLE_AGENT_REVIEW_MODEL": "review_model",
-        }
-        for env_key, attr in env_map.items():
-            if os.environ.get(env_key):
-                setattr(cfg, attr, os.environ[env_key])
-        if os.environ.get("SIMPLE_AGENT_LEARNING") in {"0", "false", "no"}:
-            cfg.learning = False
-
+        cfg = cls(home=HOME, **values)
         for directory in (cfg.home, cfg.memories_dir, cfg.skills_dir, cfg.shell_state_dir):
             directory.mkdir(parents=True, exist_ok=True)
         return cfg
+
+
+def _read_flat_yaml(path: Path) -> dict[str, str]:
+    """``key: value`` lines only — enough for this file, and no PyYAML."""
+    if not path.exists():
+        return {}
+    values = {}
+    for line in path.read_text("utf-8").splitlines():
+        line = line.split(" #")[0].strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
 
 
 def load_dotenv(path: Path | None = None) -> None:
