@@ -89,6 +89,10 @@ class Agent:
         self.shared = is_shared_multi_user_session(self.source)
 
         self.engine = engine or _engine_for(self.config)
+        if not self.engine.supports(self.config.provider):
+            raise RuntimeError(
+                f"engine {self.engine.name!r} cannot run provider {self.config.provider!r}"
+            )
         # The pi engine brings its own model; a provider is then needed only
         # for the background review, so it is built when first asked for. The
         # loop needs one every turn, so a missing API key fails here, at start.

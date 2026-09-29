@@ -128,6 +128,10 @@ def main(argv: list[str] | None = None) -> int:
     config = Config.load()
     if argv[:1] == ["--email"]:
         return serve_email(config)
+    if argv[:1] == ["--mcp"]:
+        from . import mcp
+
+        return mcp.main(argv[1:], config)
     try:
         # One conversation per working directory, resumed on the next launch.
         agent = Agent(config, source=SessionSource.local(os.getcwd()))

@@ -31,6 +31,14 @@ EventCallback = Callable[[str, str], None] | None
 class Engine(ABC):
     name: str = "unnamed"
 
+    def supports(self, provider: str) -> bool:
+        """Whether this engine can run with the configured provider.
+
+        Checked when the agent is built, so an impossible combination fails at
+        start rather than on the first message.
+        """
+        return True
+
     @abstractmethod
     def run(self, agent: "Agent", *, on_event: EventCallback, interrupt: Callable[[], bool]) -> Turn:
         """Answer the last user message in ``agent.messages``, appending to it."""
