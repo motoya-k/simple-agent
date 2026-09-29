@@ -141,10 +141,7 @@ class Host:
             log.info("dropped %s from %s (no route)", message.message_id, message.user_id)
             return None
 
-        key = message.session_key(
-            group_sessions_per_user=self.config.group_sessions_per_user,
-            thread_sessions_per_user=self.config.thread_sessions_per_user,
-        )
+        key = message.session_key()
         self._routes[key] = route
         signature = "tools=" + (",".join(route.tools) if route.tools is not None else "*")
         agent = self.agents.get(key, message.source(), signature=signature)

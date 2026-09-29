@@ -79,11 +79,55 @@ def _handle_command(agent: Agent, line: str) -> Agent | bool:
     return True
 
 
+def serve_email(config: Config) -> int:
+    """Poll a mailbox and run one agent per sender and thread. Answers nobody."""
+    import asyncio
+    import logging
+
+    from .host import AllowlistRouter, Host
+    from .mail import ImapSource, open_ledger
+
+    password = os.environ.get("SIMPLE_AGENT_IMAP_PASSWORD", "")
+    allow = tuple(a.strip() for a in config.email_allow.split(",") if a.strip())
+    missing = [
+        name
+        for name, value in (
+            ("imap_host", config.imap_host),
+            ("imap_user", config.imap_user),
+            ("SIMPLE_AGENT_IMAP_PASSWORD", password),
+            ("email_allow", allow),
+        )
+        if not value
+    ]
+    if missing:
+        print(f"--email needs: {', '.join(missing)}", file=sys.stderr)
+        return 1
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    tools = tuple(t.strip() for t in config.email_tools.split(",") if t.strip())
+    source = ImapSource(
+        host=config.imap_host,
+        user=config.imap_user,
+        password=password,
+        mailbox=config.imap_mailbox,
+        ledger=open_ledger(config),
+    )
+    host = Host(config, sources=[source], router=AllowlistRouter(allow=allow, tools=tools))
+    print(f"{DIM}watching {config.imap_user} {config.imap_mailbox} · tools: {', '.join(tools) or 'none'}{RESET}")
+    try:
+        asyncio.run(host.serve())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     argv = list(sys.argv[1:] if argv is None else argv)
 
     config = Config.load()
+    if argv[:1] == ["--email"]:
+        return serve_email(config)
     try:
         # One conversation per working directory, resumed on the next launch.
         agent = Agent(config, source=SessionSource.local(os.getcwd()))

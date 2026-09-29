@@ -36,6 +36,11 @@ KEYS = (
     "database_url",
     "memory_backend",
     "memory_namespace",
+    "imap_host",
+    "imap_user",
+    "imap_mailbox",
+    "email_allow",
+    "email_tools",
 )
 
 
@@ -58,6 +63,15 @@ class Config:
     memory_namespace: str = "default"
     # How many conversations a message host keeps live at once, and how long an
     # idle one stays resident. See registry.AgentRegistry.
+    # The email host (`simple-agent --email`). The password is read from
+    # SIMPLE_AGENT_IMAP_PASSWORD only, never from config.yaml. email_allow is
+    # comma-separated addresses or @domains; email_tools is the comma-separated
+    # toolset for mail, read-only by default. See host.py for why.
+    imap_host: str = ""
+    imap_user: str = ""
+    imap_mailbox: str = "INBOX"
+    email_allow: str = ""
+    email_tools: str = "skill_view"
     max_agents: int = DEFAULT_MAX_AGENTS
     agent_idle_seconds: float = DEFAULT_IDLE_SECONDS
     home: Path = field(default_factory=lambda: HOME)
