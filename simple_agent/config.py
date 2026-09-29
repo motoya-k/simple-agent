@@ -30,18 +30,31 @@ PROVIDER_DEFAULT_MODELS = {
 
 KEYS = (
     "provider",
+    "engine",
+    "pi_command",
+    "pi_args",
     "model",
     "review_model",
     "learning",
     "database_url",
     "memory_backend",
     "memory_namespace",
+    "imap_host",
+    "imap_user",
+    "imap_mailbox",
+    "email_allow",
+    "email_tools",
 )
 
 
 @dataclass
 class Config:
     provider: str = "anthropic"
+    # Who runs the turn: "loop" (this repo) or "pi" (an external harness; see
+    # engines/pi.py). pi_args is passed through, e.g. its --provider/--model.
+    engine: str = "loop"
+    pi_command: str = "pi"
+    pi_args: str = ""
     model: str = ""  # empty = the provider's default
     review_model: str = ""
     learning: bool = True  # background memory/skill review after each turn
@@ -58,6 +71,15 @@ class Config:
     memory_namespace: str = "default"
     # How many conversations a message host keeps live at once, and how long an
     # idle one stays resident. See registry.AgentRegistry.
+    # The email host (`simple-agent --email`). The password is read from
+    # SIMPLE_AGENT_IMAP_PASSWORD only, never from config.yaml. email_allow is
+    # comma-separated addresses or @domains; email_tools is the comma-separated
+    # toolset for mail, read-only by default. See host.py for why.
+    imap_host: str = ""
+    imap_user: str = ""
+    imap_mailbox: str = "INBOX"
+    email_allow: str = ""
+    email_tools: str = "skill_view"
     max_agents: int = DEFAULT_MAX_AGENTS
     agent_idle_seconds: float = DEFAULT_IDLE_SECONDS
     home: Path = field(default_factory=lambda: HOME)
