@@ -43,7 +43,7 @@ Python 3.10+. No other dependencies.
 | Layer | Options | Set with |
 | --- | --- | --- |
 | Model | `anthropic`, `bedrock` (Converse; Bedrock API key or IAM via `AWS_PROFILE`), `gemini`, `openai` (Responses) | `SIMPLE_AGENT_PROVIDER`, `SIMPLE_AGENT_MODEL` |
-| Harness | `loop` (built in), `pi` ([pi-mono](https://github.com/badlogic/pi-mono) as a subprocess) | `SIMPLE_AGENT_ENGINE`, `SIMPLE_AGENT_PI_ARGS` |
+| Harness | `loop` (built in), or an external harness run as a subprocess: `pi`, `claude-code`, `goose`, `opencode` | `SIMPLE_AGENT_ENGINE`, `SIMPLE_AGENT_ENGINE_ARGS` |
 | Inputs / outputs | `Source` → `Router` → `Sink`; an IMAP email source is included (the terminal REPL is its own host) | code: `simple_agent/seams.py` |
 | Memory | `local`, `mem0`, `hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
 | Transcripts | SQLite (default), Postgres | `SIMPLE_AGENT_DATABASE_URL` |
@@ -73,6 +73,18 @@ to it. Any MCP-capable harness can use it directly, e.g.
 `{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}`.
 An impossible combination (an engine that cannot run the configured provider)
 fails at start.
+
+| Engine | Harness | Providers | How our tools reach it |
+| --- | --- | --- | --- |
+| `loop` | this repo | all | directly |
+| `pi` | [pi](https://github.com/badlogic/pi-mono) | anthropic, bedrock, gemini, openai | pi extension → MCP |
+| `claude-code` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | anthropic, bedrock | MCP (`--mcp-config`) |
+| `goose` | [Goose](https://github.com/aaif-goose/goose) | anthropic, bedrock, openai | MCP extension |
+| `opencode` | [OpenCode](https://github.com/sst/opencode) | anthropic, bedrock, gemini, openai | MCP (inline config) |
+
+The harness decides *how* the work is done, not *what* it is about: a PM,
+sales, or marketing agent is the same harness given different tools (MCP
+servers) and skills.
 
 ## Email
 

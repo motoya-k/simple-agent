@@ -39,7 +39,7 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 | 層 | 選択肢 | 設定 |
 | --- | --- | --- |
 | モデル | `anthropic`、`bedrock`（Converse。Bedrock API キーか、`AWS_PROFILE` の IAM 認証）、`gemini`、`openai`（Responses） | `SIMPLE_AGENT_PROVIDER`、`SIMPLE_AGENT_MODEL` |
-| ハーネス | `loop`（組み込み）、`pi`（[pi-mono](https://github.com/badlogic/pi-mono) をサブプロセスで実行） | `SIMPLE_AGENT_ENGINE`、`SIMPLE_AGENT_PI_ARGS` |
+| ハーネス | `loop`（組み込み）、または外部のハーネスをサブプロセスで実行：`pi`、`claude-code`、`goose`、`opencode` | `SIMPLE_AGENT_ENGINE`、`SIMPLE_AGENT_ENGINE_ARGS` |
 | 入力と出力 | `Source` → `Router` → `Sink`。IMAP メールの Source を同梱（ターミナルの REPL は別のホスト） | コード：`simple_agent/seams.py` |
 | 記憶 | `local`、`mem0`、`hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
 | 会話履歴 | SQLite（既定）、Postgres | `SIMPLE_AGENT_DATABASE_URL` |
@@ -60,6 +60,16 @@ memory_backend: mem0    # 記憶。pi も simple-agent のツール経由で読�
 ```
 
 外部のハーネスは、`simple-agent --mcp` を通して記憶・スキル・過去の会話の検索を使います。これは標準入出力で動く MCP サーバーで、そのルートで許可されたツールだけを公開します。pi は MCP に対応していないので、同梱の pi 拡張機能が橋渡しをします。MCP に対応したハーネスなら、`{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}` のように直接つなげます。ハーネスが設定された LLM を扱えない組み合わせは、起動した時点でエラーになります。
+
+| エンジン | ハーネス | 使える LLM | simple-agent のツールの届け方 |
+| --- | --- | --- | --- |
+| `loop` | このリポジトリ | すべて | 直接 |
+| `pi` | [pi](https://github.com/badlogic/pi-mono) | anthropic、bedrock、gemini、openai | pi 拡張機能 → MCP |
+| `claude-code` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | anthropic、bedrock | MCP（`--mcp-config`） |
+| `goose` | [Goose](https://github.com/aaif-goose/goose) | anthropic、bedrock、openai | MCP 拡張 |
+| `opencode` | [OpenCode](https://github.com/sst/opencode) | anthropic、bedrock、gemini、openai | MCP（インライン設定） |
+
+ハーネスが決めるのは「どう進めるか」で、「何の仕事か」ではありません。PM 向け、営業向け、マーケ向けのエージェントは、同じハーネスに別のツール（MCP サーバー）とスキルを渡したものです。
 
 ## メール
 

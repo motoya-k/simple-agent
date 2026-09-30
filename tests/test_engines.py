@@ -273,3 +273,64 @@ def test_goose_without_the_full_toolset_bridges_our_file_tools_instead(tmp_path,
     assert "--with-builtin" not in argv  # no shell sneaks in with the developer bundle
     extension = argv[argv.index("--with-extension") + 1]
     assert "--tools read_file,skill_view" in extension
+
+
+# -- OpenCode ----------------------------------------------------------------
+
+FAKE_OPENCODE = textwrap.dedent(
+    """
+    import json, os, sys
+    with open(sys.argv[1], "w") as f:
+        json.dump({"argv": sys.argv[2:], "config": json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])}, f)
+    def ev(kind, **part):
+        return {"type": kind, "sessionID": "ses_abc", "part": part}
+    for event in [
+        ev("step_start"), ev("text", text="checking"), ev("tool_use", tool="simple-agent_memory_search"),
+        ev("step_finish", tokens={"input": 3, "output": 1}),
+        ev("step_start"), ev("text", text="PM standup "), ev("text", text="is 9:30."),
+        ev("step_finish", tokens={"input": 4, "output": 2}),
+    ]:
+        print(json.dumps(event))
+    """
+)
+
+
+@pytest.fixture
+def fake_opencode(tmp_path):
+    from simple_agent.engines.opencode import OpenCodeEngine
+
+    script = tmp_path / "fake_opencode.py"
+    script.write_text(FAKE_OPENCODE)
+    record = tmp_path / "opencode_run.json"
+    return OpenCodeEngine(command=f"{sys.executable} {script} {record}"), record
+
+
+def test_opencode_denies_everything_then_allows_our_list(tmp_path, fake_opencode):
+    engine, record = fake_opencode
+    config = Config(home=tmp_path, provider="bedrock", learning=False)
+    agent = Agent(config, engine=engine, provider=Unused(), tools=["read_file", "memory_search"])
+
+    turn = agent.run("when is standup?")
+    first = json.loads(record.read_text())
+
+    assert turn.text == "PM standup is 9:30." and turn.tool_calls == 1 and turn.tokens == 10
+    tools = first["config"]["tools"]
+    assert tools == {"*": False, "glob": True, "grep": True, "list": True, "read": True,
+                     "simple-agent_*": True}
+    server = first["config"]["mcp"]["simple-agent"]["command"]
+    assert server[server.index("--tools") + 1] == "memory_search"
+    assert open(first["config"]["instructions"][0]).read() == agent.system
+    argv = first["argv"]
+    assert argv[argv.index("--model") + 1] == "amazon-bedrock/jp.anthropic.claude-sonnet-4-6"
+    assert "--session" not in argv
+
+    agent.run("again")
+    second = json.loads(record.read_text())["argv"]
+    assert second[second.index("--session") + 1] == "ses_abc"
+
+
+def test_opencode_with_no_tools_gets_no_mcp_server(tmp_path, fake_opencode):
+    engine, record = fake_opencode
+    Agent(Config(home=tmp_path, learning=False), engine=engine, provider=Unused(), tools=[]).run("hi")
+    config = json.loads(record.read_text())["config"]
+    assert config["tools"] == {"*": False} and "mcp" not in config
