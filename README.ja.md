@@ -38,7 +38,7 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 
 | 層 | 選択肢 | 設定 |
 | --- | --- | --- |
-| モデル | `anthropic`、`bedrock`（Converse）、`gemini`、`openai`（Responses） | `SIMPLE_AGENT_PROVIDER`、`SIMPLE_AGENT_MODEL` |
+| モデル | `anthropic`、`bedrock`（Converse。Bedrock API キーか、`AWS_PROFILE` の IAM 認証）、`gemini`、`openai`（Responses） | `SIMPLE_AGENT_PROVIDER`、`SIMPLE_AGENT_MODEL` |
 | ハーネス | `loop`（組み込み）、`pi`（[pi-mono](https://github.com/badlogic/pi-mono) をサブプロセスで実行） | `SIMPLE_AGENT_ENGINE`、`SIMPLE_AGENT_PI_ARGS` |
 | 入力と出力 | `Source` → `Router` → `Sink`。IMAP メールの Source を同梱（ターミナルの REPL は別のホスト） | コード：`simple_agent/seams.py` |
 | 記憶 | `local`、`mem0`、`hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
