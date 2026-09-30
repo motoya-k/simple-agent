@@ -207,3 +207,69 @@ def test_claude_code_rejects_providers_it_cannot_run(tmp_path):
     config = Config(home=tmp_path, provider="gemini", learning=False)
     with pytest.raises(RuntimeError, match="cannot run provider 'gemini'"):
         Agent(config, engine=ClaudeCodeEngine(), provider=Unused())
+
+
+# -- Goose -------------------------------------------------------------------
+
+FAKE_GOOSE = textwrap.dedent(
+    """
+    import json, sys
+    with open(sys.argv[1], "w") as f:
+        json.dump(sys.argv[2:], f)
+    print("    __( O)>  banner lines are not JSON")
+    def msg(role, *content):
+        return {"type": "message", "message": {"role": role, "content": list(content)}}
+    events = [
+        msg("assistant", {"type": "text", "text": "let me check"}),
+        msg("assistant", {"type": "toolRequest",
+            "toolCall": {"status": "success", "value": {"name": "simple-agent__memory_search"}}}),
+        msg("user", {"type": "toolResponse"}),
+        msg("assistant", {"type": "text", "text": "Launch is "}),
+        msg("assistant", {"type": "text", "text": "Nov 3."}),
+        {"type": "complete", "total_tokens": 42},
+    ]
+    for event in events:
+        print(json.dumps(event))
+    """
+)
+
+
+@pytest.fixture
+def fake_goose(tmp_path):
+    from simple_agent.engines.goose import GooseEngine
+
+    script = tmp_path / "fake_goose.py"
+    script.write_text(FAKE_GOOSE)
+    argv_file = tmp_path / "goose_argv.json"
+    return GooseEngine(command=f"{sys.executable} {script} {argv_file}"), argv_file
+
+
+def test_goose_joins_the_streamed_answer_and_resumes_without_re_adding(tmp_path, fake_goose):
+    engine, argv_file = fake_goose
+    agent = Agent(Config(home=tmp_path, provider="bedrock", learning=False), engine=engine, provider=Unused())
+
+    turn = agent.run("when is launch?")
+    first = json.loads(argv_file.read_text())
+
+    assert turn.text == "Launch is Nov 3."  # only the text after the last tool result
+    assert (turn.tool_calls, turn.tokens) == (1, 42)
+    assert first[first.index("--provider") + 1] == "aws_bedrock"
+    assert first[first.index("--with-builtin") + 1] == "developer"  # full toolset allowed
+    extension = first[first.index("--with-extension") + 1]
+    assert extension.startswith("simple-agent:") and "--session-key" not in extension
+    assert "--resume" not in first
+
+    agent.run("again")
+    second = json.loads(argv_file.read_text())
+    assert "--resume" in second and second[second.index("--name") + 1] == first[first.index("--name") + 1]
+    assert "--with-extension" not in second and "--with-builtin" not in second  # restored by goose
+
+
+def test_goose_without_the_full_toolset_bridges_our_file_tools_instead(tmp_path, fake_goose):
+    engine, argv_file = fake_goose
+    Agent(Config(home=tmp_path, provider="bedrock", learning=False), engine=engine,
+          provider=Unused(), tools=["read_file", "skill_view"]).run("hi")
+    argv = json.loads(argv_file.read_text())
+    assert "--with-builtin" not in argv  # no shell sneaks in with the developer bundle
+    extension = argv[argv.index("--with-extension") + 1]
+    assert "--tools read_file,skill_view" in extension

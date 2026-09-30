@@ -51,7 +51,11 @@ class ExternalEngine(Engine):
         raise NotImplementedError
 
     def environment(self, agent: "Agent") -> dict[str, str]:
-        return {**os.environ, "SIMPLE_AGENT_HOME": str(agent.config.home)}
+        return {
+            **os.environ,
+            "SIMPLE_AGENT_HOME": str(agent.config.home),
+            "SIMPLE_AGENT_MCP_SESSION_KEY": agent.session_key,
+        }
 
     def read_event(self, event: dict[str, Any], turn: Turn, emit: Callable[[str, str], None]) -> str | None:
         """Update ``turn`` from one event; return the answer text if it carries one."""

@@ -16,6 +16,7 @@ server needs: ``initialize``, ``tools/list``, ``tools/call``, ``ping``.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import IO, Any
 
@@ -101,7 +102,9 @@ def serve(
 
 def main(argv: list[str], config: Any) -> int:
     tools: list[str] | None = None
-    session_key = ""
+    # Also from the environment, for harnesses that take an MCP server as one
+    # command string, where a key with spaces in it would not survive.
+    session_key = os.environ.get("SIMPLE_AGENT_MCP_SESSION_KEY", "")
     args = iter(argv)
     for arg in args:
         if arg == "--tools":
