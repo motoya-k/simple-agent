@@ -304,6 +304,10 @@ class Agent:
 
 
 def _engine_for(config: Config) -> Engine:
-    if config.engine == "pi":
-        return get_engine("pi", command=config.pi_command, args=config.pi_args)
-    return get_engine(config.engine)
+    if config.engine == "loop":
+        return get_engine("loop")
+    return get_engine(
+        config.engine,
+        command=config.engine_command or config.pi_command,
+        args=config.engine_args or config.pi_args,
+    )
