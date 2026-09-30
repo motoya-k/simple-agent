@@ -42,7 +42,7 @@ Python 3.10+. No other dependencies.
 
 | Layer | Options | Set with |
 | --- | --- | --- |
-| Model | `anthropic`, `bedrock` (Converse), `gemini`, `openai` (Responses) | `SIMPLE_AGENT_PROVIDER`, `SIMPLE_AGENT_MODEL` |
+| Model | `anthropic`, `bedrock` (Converse; Bedrock API key or IAM via `AWS_PROFILE`), `gemini`, `openai` (Responses) | `SIMPLE_AGENT_PROVIDER`, `SIMPLE_AGENT_MODEL` |
 | Harness | `loop` (built in), `pi` ([pi-mono](https://github.com/badlogic/pi-mono) as a subprocess) | `SIMPLE_AGENT_ENGINE`, `SIMPLE_AGENT_PI_ARGS` |
 | Inputs / outputs | `Source` → `Router` → `Sink`; an IMAP email source is included (the terminal REPL is its own host) | code: `simple_agent/seams.py` |
 | Memory | `local`, `mem0`, `hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
