@@ -137,7 +137,7 @@ their configuration — goes in an image built from it:
 ```dockerfile
 FROM ghcr.io/you/simple-agent:latest          # built from this repo's Dockerfile
 RUN pip install --user workspace-mcp==1.30.0  # pin what you run
-COPY mcp.json /home/agent/.simple-agent/mcp.json
+COPY --chown=agent:agent mcp.json /home/agent/.simple-agent/mcp.json
 ```
 
 Run one task with:

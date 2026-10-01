@@ -13,11 +13,16 @@ RUN pip install ".[postgres]" && useradd --create-home --uid 10001 agent
 
 USER agent
 WORKDIR /home/agent
+# Created by the agent user, so files a derived image COPYs in do not leave
+# the directory owned by root.
+RUN mkdir -p /home/agent/.simple-agent
 
 # Production defaults; override per deployment.
-#   no shell on an unattended host, one JSON object per log line,
+#   `pip install --user` in a derived image lands on PATH, no shell on an
+#   unattended host, one JSON object per log line,
 #   the AWS region the Bedrock provider and profiles default to.
-ENV SIMPLE_AGENT_HOME=/home/agent/.simple-agent \
+ENV PATH=/home/agent/.local/bin:$PATH \
+    SIMPLE_AGENT_HOME=/home/agent/.simple-agent \
     SIMPLE_AGENT_LOG_FORMAT=json \
     SIMPLE_AGENT_DISABLED_TOOLS=terminal \
     AWS_REGION=ap-northeast-1

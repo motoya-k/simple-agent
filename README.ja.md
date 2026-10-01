@@ -108,7 +108,7 @@ simple-agent --email
 ```dockerfile
 FROM ghcr.io/you/simple-agent:latest          # この repo の Dockerfile からビルドしたもの
 RUN pip install --user workspace-mcp==1.30.0  # 動かすものはバージョンを固定する
-COPY mcp.json /home/agent/.simple-agent/mcp.json
+COPY --chown=agent:agent mcp.json /home/agent/.simple-agent/mcp.json
 ```
 
 タスクは 1 つで、次のように設定します。
