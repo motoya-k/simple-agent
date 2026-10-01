@@ -334,3 +334,148 @@ def test_opencode_with_no_tools_gets_no_mcp_server(tmp_path, fake_opencode):
     Agent(Config(home=tmp_path, learning=False), engine=engine, provider=Unused(), tools=[]).run("hi")
     config = json.loads(record.read_text())["config"]
     assert config["tools"] == {"*": False} and "mcp" not in config
+
+
+# -- Hermes ------------------------------------------------------------------
+
+FAKE_HERMES = textwrap.dedent(
+    """
+    import json, os, sys
+    with open(sys.argv[1], "w") as f:
+        json.dump({"argv": sys.argv[2:], "home": os.environ["HERMES_HOME"],
+                   "system": os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"]}, f)
+    print("  ⚠ tirith security scanner enabled but not available")
+    print("Warning: Unknown toolsets: mcp-simple-agent")
+    print("Design review is")
+    print("every Wednesday.")
+    print("session_id: 20261001_1", file=sys.stderr)
+    """
+)
+
+
+@pytest.fixture
+def fake_hermes(tmp_path):
+    from simple_agent.engines.hermes import HermesEngine
+
+    script = tmp_path / "fake_hermes.py"
+    script.write_text(FAKE_HERMES)
+    record = tmp_path / "hermes_run.json"
+    return HermesEngine(command=f"{sys.executable} {script} {record}"), record
+
+
+def test_hermes_is_isolated_narrowed_and_resumed(tmp_path, fake_hermes):
+    engine, record = fake_hermes
+    config = Config(home=tmp_path, provider="bedrock", learning=False, memory_backend="local")
+    agent = Agent(config, engine=engine, provider=Unused(), tools=["read_file", "memory_save"])
+
+    turn = agent.run("when is design review?")
+    first = json.loads(record.read_text())
+
+    assert turn.text == "Design review is\nevery Wednesday."  # noise lines dropped
+    argv = first["argv"]
+    assert argv[argv.index("-t") + 1] == "mcp-simple-agent"  # no Hermes built-ins
+    assert "--yolo" not in argv and "--resume" not in argv
+    assert argv[argv.index("--provider") + 1] == "bedrock"
+    assert first["system"] == agent.system
+    hermes_config = json.loads((tmp_path / "hermes" / "config.yaml").read_text())
+    server = hermes_config["mcp_servers"]["simple-agent"]
+    assert server["args"][server["args"].index("--tools") + 1] == "memory_save,read_file"
+    # Hermes scrubs the environment, so where memory lives must be explicit.
+    assert server["env"]["SIMPLE_AGENT_HOME"] == str(tmp_path)
+    assert server["env"]["SIMPLE_AGENT_MEMORY_BACKEND"] == "local"
+
+    agent.run("again")
+    second = json.loads(record.read_text())["argv"]
+    assert second[second.index("--resume") + 1] == "20261001_1"
+
+
+def test_hermes_with_the_full_toolset_uses_its_builtins(tmp_path, fake_hermes):
+    engine, record = fake_hermes
+    Agent(Config(home=tmp_path, learning=False), engine=engine, provider=Unused()).run("hi")
+    argv = json.loads(record.read_text())["argv"]
+    assert argv[argv.index("-t") + 1] == "terminal,file,mcp-simple-agent"
+    assert "--yolo" in argv
+
+
+def test_every_engine_passes_the_mcp_server_its_settings_explicitly(tmp_path, fake_claude):
+    engine, argv_file = fake_claude
+    config = Config(home=tmp_path, learning=False, memory_backend="local", memory_namespace="team-a")
+    Agent(config, engine=engine, provider=Unused(), tools=["memory_save"]).run("hi")
+    argv = json.loads(argv_file.read_text())
+    env = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]["simple-agent"]["env"]
+    assert env["SIMPLE_AGENT_HOME"] == str(tmp_path)
+    assert env["SIMPLE_AGENT_MEMORY_NAMESPACE"] == "team-a"
+
+
+# -- mini-swe-agent ----------------------------------------------------------
+
+FAKE_MINI = textwrap.dedent(
+    """
+    import json, sys
+    argv = sys.argv[2:]
+    with open(sys.argv[1], "w") as f:
+        json.dump(argv, f)
+    traj = {
+        "info": {"exit_status": "Submitted", "submission": "16\\n", "model_stats": {"api_calls": 3}},
+        "messages": [
+            {"role": "assistant", "content": "doubling",
+             "tool_calls": [{"function": {"arguments": json.dumps({"command": "echo $((8*2))"})}}]},
+            {"role": "tool", "content": "16"},
+        ],
+    }
+    with open(argv[argv.index("-o") + 1], "w") as f:
+        json.dump(traj, f)
+    print("console output nobody parses")
+    """
+)
+
+
+@pytest.fixture
+def fake_mini(tmp_path):
+    from simple_agent.engines.mini_swe import MiniSweEngine
+
+    script = tmp_path / "fake_mini.py"
+    script.write_text(FAKE_MINI)
+    argv_file = tmp_path / "mini_argv.json"
+    return MiniSweEngine(command=f"{sys.executable} {script} {argv_file}"), argv_file
+
+
+def test_mini_swe_reads_the_submission_and_replays_history(tmp_path, fake_mini):
+    engine, argv_file = fake_mini
+    agent = Agent(Config(home=tmp_path, provider="bedrock", learning=False), engine=engine, provider=Unused())
+
+    first = agent.run("count the files")
+    assert first.text == "16" and first.iterations == 3 and first.tool_calls == 1
+    assert ("tool", "bash echo $((8*2))") in first.events
+
+    agent.run("double it")
+    argv = json.loads(argv_file.read_text())
+    assert argv[argv.index("-m") + 1] == "bedrock/jp.anthropic.claude-sonnet-4-6"
+    assert "agent.step_limit=30" in argv
+    task = argv[argv.index("-t") + 1]
+    assert "user: count the files" in task and "assistant: 16" in task  # no sessions: replayed
+    assert "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in task
+
+
+def test_mini_swe_refuses_a_route_without_a_shell(tmp_path, fake_mini):
+    engine, _ = fake_mini
+    agent = Agent(Config(home=tmp_path, learning=False), engine=engine, provider=Unused(), tools=["read_file"])
+    with pytest.raises(RuntimeError, match="only tool is a shell"):
+        agent.run("hi")
+
+
+def test_claude_code_resumes_when_its_marker_was_lost(tmp_path):
+    from simple_agent.engines.claude_code import ClaudeCodeEngine
+
+    script = tmp_path / "claude_in_use.py"
+    script.write_text(textwrap.dedent("""
+        import json, sys
+        if "--session-id" in sys.argv:
+            print("Error: Session ID x is already in use.", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({"type": "result", "is_error": False, "result": "resumed"}))
+    """))
+    agent = Agent(Config(home=tmp_path, learning=False),
+                  engine=ClaudeCodeEngine(command=f"{sys.executable} {script}"), provider=Unused())
+    assert agent.run("hi").text == "resumed"
+    assert agent.messages[-1]["content"][0]["text"] == "resumed"

@@ -81,6 +81,8 @@ fails at start.
 | `claude-code` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | anthropic, bedrock | MCP (`--mcp-config`) |
 | `goose` | [Goose](https://github.com/aaif-goose/goose) | anthropic, bedrock, openai | MCP extension |
 | `opencode` | [OpenCode](https://github.com/sst/opencode) | anthropic, bedrock, gemini, openai | MCP (inline config) |
+| `hermes` | [Hermes Agent](https://github.com/NousResearch/hermes-agent) — self-improving; where this repo started | anthropic, bedrock | MCP (isolated `HERMES_HOME`) |
+| `mini-swe` | [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) — ~200-line loop, bash is the only tool | anthropic, bedrock, gemini, openai | none: context in the task; needs `terminal` |
 
 The harness decides *how* the work is done, not *what* it is about: a PM,
 sales, or marketing agent is the same harness given different tools (MCP

@@ -68,6 +68,8 @@ memory_backend: mem0    # 記憶。pi も simple-agent のツール経由で読�
 | `claude-code` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | anthropic、bedrock | MCP（`--mcp-config`） |
 | `goose` | [Goose](https://github.com/aaif-goose/goose) | anthropic、bedrock、openai | MCP 拡張 |
 | `opencode` | [OpenCode](https://github.com/sst/opencode) | anthropic、bedrock、gemini、openai | MCP（インライン設定） |
+| `hermes` | [Hermes Agent](https://github.com/NousResearch/hermes-agent)：自己改善型。この repo の出発点 | anthropic、bedrock | MCP（隔離した `HERMES_HOME`） |
+| `mini-swe` | [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)：約 200 行のループで、ツールは bash だけ | anthropic、bedrock、gemini、openai | なし（文脈はタスク文に入れる）。`terminal` の許可が必要 |
 
 ハーネスが決めるのは「どう進めるか」で、「何の仕事か」ではありません。PM 向け、営業向け、マーケ向けのエージェントは、同じハーネスに別のツール（MCP サーバー）とスキルを渡したものです。
 

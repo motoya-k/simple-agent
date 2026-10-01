@@ -62,7 +62,20 @@ class ExternalEngine(Engine):
         raise NotImplementedError
 
     def after_success(self, agent: "Agent") -> None:
-        """Hook for engines that must remember something once a turn succeeded."""
+        """Hook for engines that must remember something once a turn succeeded.
+
+        ``self.stderr`` holds the harness's stderr by then, for engines that
+        learn their session id from it.
+        """
+
+    def collect(self, agent: "Agent", turn: Turn) -> str | None:
+        """After a clean exit: the answer, for harnesses that write it to a file."""
+        return None
+
+    def read_line(self, line: str, turn: Turn, emit: Callable[[str, str], None]) -> str | None:
+        """One line of stdout. JSON event streams by default; a plain-text
+        harness overrides this."""
+        return self.read_event(_json(line), turn, emit)
 
     # -- shared helpers ---------------------------------------------------
     def builtin_tools(self, agent: "Agent") -> list[str]:
@@ -79,6 +92,30 @@ class ExternalEngine(Engine):
             "--tools", ",".join(self.bridged_tools(agent)),
             "--session-key", agent.session_key,
         ]
+
+    def mcp_env(self, agent: "Agent") -> dict[str, str]:
+        """What our MCP server must see, stated explicitly.
+
+        Some harnesses start MCP servers with a scrubbed environment (Hermes
+        does), so nothing may rely on inheritance: a server that silently
+        falls back to defaults reads and writes the *wrong* memory.  Includes
+        PATH and HOME so the MCP servers *it* imports still start.
+        """
+        config = agent.config
+        env = {
+            "SIMPLE_AGENT_HOME": str(config.home),
+            "SIMPLE_AGENT_MCP_SESSION_KEY": agent.session_key,
+            "SIMPLE_AGENT_MEMORY_BACKEND": config.memory_backend,
+            "SIMPLE_AGENT_MEMORY_NAMESPACE": config.memory_namespace,
+            "SIMPLE_AGENT_SKILL_BACKEND": config.skill_backend,
+            "SIMPLE_AGENT_DATABASE_URL": config.database_url,
+            "SIMPLE_AGENT_DISABLED_TOOLS": config.disabled_tools,
+        }
+        for name in ("PATH", "HOME", "LANG", "MEM0_API_KEY", "MEM0_API_URL",
+                     "HINDSIGHT_API_URL", "HINDSIGHT_API_KEY"):
+            if os.environ.get(name):
+                env[name] = os.environ[name]
+        return {k: v for k, v in env.items() if v}
 
     def has_flag(self, *flags: str) -> bool:
         """Whether the user's pass-through args already set one of ``flags``."""
@@ -112,16 +149,18 @@ class ExternalEngine(Engine):
                     process.terminate()
                     turn.stopped_by = "interrupt"
                     break
-                text = self.read_event(_json(line), turn, emit)
+                text = self.read_line(line, turn, emit)
                 if text:
                     answer = text
             code = process.wait()
             stderr.seek(0)
-            detail = stderr.read().strip()[-2000:]
+            self.stderr = stderr.read()
+            detail = self.stderr.strip()[-2000:]
 
         if turn.stopped_by != "interrupt":
             if code != 0:
                 raise RuntimeError(f"{self.name} exited with {code}: {detail}")
+            answer = self.collect(agent, turn) or answer
             self.after_success(agent)
         turn.text = answer
         # Keep the transcript valid for our side: every user turn gets an

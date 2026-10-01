@@ -87,7 +87,7 @@ class OpenCodeEngine(ExternalEngine):
                 MCP_NAME: {
                     "type": "local",
                     "command": server,
-                    "environment": {"SIMPLE_AGENT_HOME": str(agent.config.home)},
+                    "environment": self.mcp_env(agent),
                 }
             }
         return {**super().environment(agent), "OPENCODE_CONFIG_CONTENT": json.dumps(config)}

@@ -52,7 +52,9 @@ class ClaudeCodeEngine(ExternalEngine):
     provider_map = {"anthropic": "anthropic", "bedrock": "bedrock"}
 
     def session_id(self, agent: "Agent") -> str:
-        return str(uuid.uuid5(_NAMESPACE, agent.session_key))
+        # The home is part of it: two agent homes on one machine share Claude
+        # Code's session store, and must not share conversations.
+        return str(uuid.uuid5(_NAMESPACE, f"{agent.config.home}\n{agent.session_key}"))
 
     def _marker(self, agent: "Agent"):
         return agent.config.home / "claude-code" / f"{self.session_id(agent)}.started"
@@ -76,7 +78,9 @@ class ClaudeCodeEngine(ExternalEngine):
             command += ["--allowedTools", ",".join(allowed)]
         if bridged:
             server = self.mcp_server(agent)
-            config = {"mcpServers": {MCP_NAME: {"command": server[0], "args": server[1:]}}}
+            config = {"mcpServers": {MCP_NAME: {
+                "command": server[0], "args": server[1:], "env": self.mcp_env(agent),
+            }}}
             command += ["--mcp-config", json.dumps(config)]
         if not self.has_flag("--setting-sources"):
             command += ["--setting-sources", ""]
@@ -90,6 +94,17 @@ class ClaudeCodeEngine(ExternalEngine):
             env["CLAUDE_CODE_USE_BEDROCK"] = "1"
             env.setdefault("AWS_REGION", env.get("AWS_DEFAULT_REGION") or _bedrock_region())
         return env
+
+    def run(self, agent: "Agent", *, on_event, interrupt):
+        try:
+            return super().run(agent, on_event=on_event, interrupt=interrupt)
+        except RuntimeError as exc:
+            # Our "already started" marker is gone (a new container, a wiped
+            # home) but Claude Code still has the session: resume it.
+            if "already in use" not in str(exc) or self._marker(agent).exists():
+                raise
+            self.after_success(agent)
+            return super().run(agent, on_event=on_event, interrupt=interrupt)
 
     def after_success(self, agent: "Agent") -> None:
         marker = self._marker(agent)

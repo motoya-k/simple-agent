@@ -68,6 +68,8 @@ _REGISTRY: dict[str, str] = {
     "claude-code": "simple_agent.engines.claude_code:ClaudeCodeEngine",
     "goose": "simple_agent.engines.goose:GooseEngine",
     "opencode": "simple_agent.engines.opencode:OpenCodeEngine",
+    "hermes": "simple_agent.engines.hermes:HermesEngine",
+    "mini-swe": "simple_agent.engines.mini_swe:MiniSweEngine",
 }
 
 
