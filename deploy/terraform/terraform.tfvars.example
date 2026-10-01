@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and fill in.
+vpc_id             = "vpc-0123456789abcdef0"
+private_subnet_ids = ["subnet-aaaa", "subnet-bbbb"]
+image              = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/simple-agent:2026-10-01"
+
+environment = {
+  SIMPLE_AGENT_IMAP_HOST    = "imap.gmail.com"
+  SIMPLE_AGENT_IMAP_USER    = "ai@example.com"
+  SIMPLE_AGENT_EMAIL_ALLOW  = "@example.com"
+  SIMPLE_AGENT_EMAIL_TOOLS  = "skill_view,google__get_*,google__search_*,google__list_*"
+  USER_GOOGLE_EMAIL         = "ai@example.com"
+}
+
+# Google Workspace through a service account with domain-wide delegation.
+extra_secret_names = ["GOOGLE_SERVICE_ACCOUNT_KEY_JSON"]

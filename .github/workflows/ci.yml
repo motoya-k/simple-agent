@@ -40,3 +40,15 @@ jobs:
         run: |
           docker run --rm simple-agent:ci simple-agent --health && exit 1 || true
           docker run --rm simple-agent:ci python -c "import simple_agent, psycopg; print('ok')"
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
