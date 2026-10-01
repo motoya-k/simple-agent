@@ -101,6 +101,25 @@ simple-agent --email
 
 **メールは信頼できない入力です。** 受信箱には誰でもメールを送れますし、差出人アドレスは簡単に偽装できます。そのため、差出人の許可リストはコストを抑える役にしか立ちません。本当の防御線はツールの制限です。メールから動く会話は、既定では読み取り専用のツールだけを使い（`SIMPLE_AGENT_EMAIL_TOOLS`）、会話後のバックグラウンドレビューも実行しません。こうすることで、メールの内容が記憶やスキルに書き込まれ、信頼しているほかのセッションに読み込まれることを防ぎます。ツールを広げる場合は、このリスクを理解したうえで行ってください。
 
+## デプロイ（AWS ECS Fargate）
+
+イメージに入っているのはエージェント本体だけです。本番向けの既定値は組み込み済みです。具体的には、root 以外のユーザーで動き、ログは JSON 形式、`terminal` ツールは無効、ヘルスチェック（`simple-agent --health`）付きで、起動すると `simple-agent --email` が動きます。MCP サーバーとその設定のように利用者が用意するものは、このイメージを元にした別のイメージに入れます。
+
+```dockerfile
+FROM ghcr.io/you/simple-agent:latest          # この repo の Dockerfile からビルドしたもの
+RUN pip install --user workspace-mcp==1.30.0  # 動かすものはバージョンを固定する
+COPY --chown=agent:agent mcp.json /home/agent/.simple-agent/mcp.json
+```
+
+タスクは 1 つで、次のように設定します。
+
+- **状態は Postgres（RDS / Aurora）に置き**、コンテナには何も残しません。設定は `SIMPLE_AGENT_DATABASE_URL`、`SIMPLE_AGENT_MEMORY_BACKEND=postgres`、`SIMPLE_AGENT_SKILL_BACKEND=postgres` です。
+- **タスクロール**に、推論プロファイルと、その振り分け先のモデルに対する `bedrock:InvokeModel` を付けます。認証情報はロールから取得して自動で更新するので、タスクにキーを置く必要はありません。
+- **秘密情報は Secrets Manager から環境変数として渡します**（`SIMPLE_AGENT_IMAP_PASSWORD`、データベースの URL、MCP サーバー用のキー）。MCP サーバーは環境変数を引き継ぎます。
+- `stopTimeout: 120`（SIGTERM を受けてから、処理中の会話に 90 秒の猶予を与えるため）、`initProcessEnabled: true`（終了した MCP サーバーのプロセスを回収するため）、`desiredCount: 1` にします。
+
+モデルの呼び出しは、429 や 5xx が返ると間隔をあけて再試行します。同時に処理する会話は最大 `SIMPLE_AGENT_MAX_CONCURRENT_TURNS`（既定は 4）件で、1 つの会話の中では順番どおりに処理します。
+
 ## 開発
 
 ```bash

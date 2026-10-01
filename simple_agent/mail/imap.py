@@ -47,8 +47,10 @@ class ImapSource(Source):
         self.poll_seconds = poll_seconds
         self._connect = connect
         self._key = f"{user}@{host}/{mailbox}"
-        # message_id -> (uidvalidity, uid), so ack() can find what to record.
-        self._pending: dict[str, tuple[int, int]] = {}
+        # message_id -> every (uidvalidity, uid) carrying it, so ack() can
+        # record them all. Also what keeps the next poll from fetching mail a
+        # turn is still working on: the host runs turns concurrently.
+        self._pending: dict[str, list[tuple[int, int]]] = {}
 
     async def messages(self) -> AsyncIterator[InboundMessage]:
         while True:
@@ -73,19 +75,24 @@ class ImapSource(Source):
             uids = _uids(client, "ALL")
             baseline = self.ledger.baseline(self._key, uidvalidity, max(uids, default=0))
 
+            in_flight = {entry for entries in self._pending.values() for entry in entries}
             found: list[InboundMessage] = []
             for uid in uids:
-                if uid <= baseline or self.ledger.seen(self._key, uidvalidity, uid):
+                if uid <= baseline or (uidvalidity, uid) in in_flight:
+                    continue
+                if self.ledger.seen(self._key, uidvalidity, uid):
                     continue
                 status, data = client.uid("FETCH", str(uid), "(BODY.PEEK[])")
                 raw = _literal(data) if status == "OK" else None
                 if raw is None:
                     continue
                 message = parse_message(raw)
-                self._pending[message.message_id or f"uid:{uid}"] = (uidvalidity, uid)
                 if not message.message_id:
                     message = _with_message_id(message, f"uid:{uid}")
-                found.append(message)
+                copies = self._pending.setdefault(message.message_id, [])
+                copies.append((uidvalidity, uid))
+                if len(copies) == 1:  # a second copy of the same message is not a second request
+                    found.append(message)
             return found
         finally:
             try:
@@ -94,8 +101,7 @@ class ImapSource(Source):
                 pass
 
     async def ack(self, message: InboundMessage) -> None:
-        entry = self._pending.pop(message.message_id, None)
-        if entry is not None:
+        for entry in self._pending.pop(message.message_id, []):
             self.ledger.mark(self._key, *entry)
 
 

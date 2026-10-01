@@ -29,6 +29,10 @@ Only the frontmatter (name + description) is resident in the system prompt; the
 body is loaded on demand by ``skill_view``.  That keeps an ever-growing library
 from eating the context window — a hundred skills cost a few hundred tokens.
 
+Where the ``SKILL.md`` text lives is a :class:`SkillStore`: a directory by
+default, or a Postgres table (``skill_backend: postgres``) for a container
+whose disk does not outlive it.  Everything above the store is the same.
+
 The **curator** ages skills instead of deleting them: ``active`` → ``stale``
 (30 days unused) → ``archived`` (90 days).  Archived skills drop out of the
 prompt listing but stay on disk, because "the agent decided this was useless"
@@ -38,8 +42,10 @@ is a judgment that should be reversible.
 from __future__ import annotations
 
 import re
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any, Protocol
 
 STALE_AFTER = timedelta(days=30)
 ARCHIVE_AFTER = timedelta(days=90)
@@ -76,11 +82,95 @@ def _abstraction_warning(body: str) -> str:
     )
 
 
+class SkillStore(Protocol):
+    def names(self) -> list[str]: ...
+    def read(self, name: str) -> str | None: ...
+    def write(self, name: str, text: str) -> None: ...
+
+
+class FileSkillStore:
+    """``<dir>/<name>/SKILL.md`` — editable by hand, diffable, the default."""
+
+    def __init__(self, directory: Path) -> None:
+        self.dir = directory
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def path(self, name: str) -> Path:
+        return self.dir / name / "SKILL.md"
+
+    def names(self) -> list[str]:
+        return sorted(p.parent.name for p in self.dir.glob("*/SKILL.md"))
+
+    def read(self, name: str) -> str | None:
+        try:
+            return self.path(name).read_text("utf-8")
+        except OSError:
+            return None
+
+    def write(self, name: str, text: str) -> None:
+        self.path(name).parent.mkdir(parents=True, exist_ok=True)
+        self.path(name).write_text(text, "utf-8")
+
+
+class PostgresSkillStore:
+    """One row per skill, for hosts that keep nothing on local disk."""
+
+    _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS skills (
+        name       TEXT PRIMARY KEY,
+        text       TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )"""
+
+    def __init__(self, url: str) -> None:
+        import psycopg  # optional dependency: pip install 'simple-agent[postgres]'
+
+        self._conn = psycopg.connect(url, autocommit=True)
+        self._lock = threading.Lock()
+        with self._lock:
+            self._conn.execute(self._SCHEMA)
+
+    def names(self) -> list[str]:
+        with self._lock:
+            return [r[0] for r in self._conn.execute("SELECT name FROM skills ORDER BY name").fetchall()]
+
+    def read(self, name: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT text FROM skills WHERE name = %s", (name,)).fetchone()
+        return row[0] if row else None
+
+    def write(self, name: str, text: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO skills (name, text) VALUES (%s, %s) "
+                "ON CONFLICT (name) DO UPDATE SET text = EXCLUDED.text, updated_at = now()",
+                (name, text),
+            )
+
+
+def open_skills(config: Any) -> "SkillLibrary":
+    """The skill library ``config.skill_backend`` names (files unless "postgres")."""
+    if getattr(config, "skill_backend", "files") == "postgres":
+        if not config.database_url:
+            raise ValueError("skill_backend=postgres needs database_url")
+        return SkillLibrary(PostgresSkillStore(config.database_url))
+    return SkillLibrary(config.skills_dir)
+
+
 class Skill:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.name = path.parent.name
-        self.meta, self.body = _parse(path.read_text("utf-8"))
+    def __init__(self, name: str, text: str, store: SkillStore) -> None:
+        self.name = name
+        self.store = store
+        self.meta, self.body = _parse(text)
+
+    @property
+    def path(self) -> Path | None:
+        """The file behind this skill, when it is a file."""
+        return self.store.path(self.name) if isinstance(self.store, FileSkillStore) else None
+
+    def _write(self) -> None:
+        front = "\n".join(f"{k}: {v}" for k, v in self.meta.items())
+        self.store.write(self.name, f"---\n{front}\n---\n\n{self.body.strip()}\n")
 
     @property
     def description(self) -> str:
@@ -100,39 +190,33 @@ class Skill:
     def save(self) -> None:
         self.meta["name"] = self.name
         self.meta["updated"] = date.today().isoformat()
-        front = "\n".join(f"{k}: {v}" for k, v in self.meta.items())
-        self.path.write_text(f"---\n{front}\n---\n\n{self.body.strip()}\n", "utf-8")
+        self._write()
 
 
 class SkillLibrary:
-    def __init__(self, directory: Path) -> None:
-        self.dir = directory
-        self.dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, store: "SkillStore | Path") -> None:
+        self.store: SkillStore = FileSkillStore(store) if isinstance(store, Path) else store
 
     def all(self) -> list[Skill]:
         skills = []
-        for path in sorted(self.dir.glob("*/SKILL.md")):
-            try:
-                skills.append(Skill(path))
-            except OSError:
-                continue
+        for name in self.store.names():
+            text = self.store.read(name)
+            if text is not None:
+                skills.append(Skill(name, text, self.store))
         return skills
 
     def get(self, name: str) -> Skill | None:
-        path = self.dir / name / "SKILL.md"
-        return Skill(path) if path.exists() else None
+        text = self.store.read(name)
+        return Skill(name, text, self.store) if text is not None else None
 
     def create(self, name: str, description: str, body: str) -> str:
         if not _NAME_RE.match(name):
             return "Invalid name: use lowercase letters, digits and hyphens (2-64 chars)."
-        path = self.dir / name / "SKILL.md"
-        if path.exists():
+        if self.store.read(name) is not None:
             return f"Skill {name!r} already exists — patch it instead of recreating it."
         if not description.strip():
             return "A skill needs a description; it is the only part always in context."
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("---\n---\n\n", "utf-8")  # placeholder so Skill() can load
-        skill = Skill(path)
+        skill = Skill(name, "", self.store)
         skill.meta = {"name": name, "description": description.strip(), "status": "active", "uses": "0"}
         skill.body = body.strip()
         skill.save()
@@ -179,9 +263,7 @@ class SkillLibrary:
                 target = "stale"
             if target != skill.status:
                 skill.meta["status"] = target
-                # Write directly: save() would refresh `updated` and reset the clock.
-                front = "\n".join(f"{k}: {v}" for k, v in skill.meta.items())
-                skill.path.write_text(f"---\n{front}\n---\n\n{skill.body.strip()}\n", "utf-8")
+                skill._write()  # not save(): that would refresh `updated` and reset the clock
                 changes.append(f"{skill.name}: {target}")
         return changes
 

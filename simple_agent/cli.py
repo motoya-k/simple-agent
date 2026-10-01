@@ -79,10 +79,27 @@ def _handle_command(agent: Agent, line: str) -> Agent | bool:
     return True
 
 
+def health(config: Config) -> int:
+    """Exit 0 while a host's heartbeat is fresh — for a container health check."""
+    import time
+
+    from .host import HEARTBEAT_SECONDS
+
+    try:
+        age = time.time() - float((config.home / "heartbeat").read_text())
+    except (OSError, ValueError):
+        print("unhealthy: no heartbeat", file=sys.stderr)
+        return 1
+    if age > 3 * HEARTBEAT_SECONDS:
+        print(f"unhealthy: last heartbeat {age:.0f}s ago", file=sys.stderr)
+        return 1
+    print(f"healthy: last heartbeat {age:.0f}s ago")
+    return 0
+
+
 def serve_email(config: Config) -> int:
     """Poll a mailbox and run one agent per sender and thread. Answers nobody."""
     import asyncio
-    import logging
 
     from .host import AllowlistRouter, Host
     from .mail import ImapSource, open_ledger
@@ -103,7 +120,9 @@ def serve_email(config: Config) -> int:
         print(f"--email needs: {', '.join(missing)}", file=sys.stderr)
         return 1
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from .logs import configure
+
+    configure()
     tools = tuple(t.strip() for t in config.email_tools.split(",") if t.strip())
     source = ImapSource(
         host=config.imap_host,
@@ -128,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     config = Config.load()
     if argv[:1] == ["--email"]:
         return serve_email(config)
+    if argv[:1] == ["--health"]:
+        return health(config)
     if argv[:1] == ["--mcp"]:
         from . import mcp
 

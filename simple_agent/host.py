@@ -19,6 +19,17 @@ adapter and expensive when it is:
 * **An answer that cannot be delivered is kept.**  It cost a model call and
   cannot be regenerated identically, so a failed send goes to a dead-letter
   file rather than the log.
+
+And three that make it safe to run unattended in a container:
+
+* **Turns run concurrently, conversations do not.**  Up to
+  ``max_concurrent_turns`` messages are worked on at once, but two messages in
+  the same conversation run in the order they arrived.
+* **SIGTERM drains.**  A deploy stops taking new messages, gives turns in
+  flight ``SHUTDOWN_GRACE`` seconds to finish, then interrupts the rest.  An
+  interrupted message was never acknowledged, so it is replayed on restart.
+* **A heartbeat file** is touched while the host is healthy, for a container
+  health check (``simple-agent --health``).
 """
 
 from __future__ import annotations
@@ -26,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import signal
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -40,6 +52,11 @@ log = logging.getLogger(__name__)
 # another conversation will read. Skills qualify because they are abstract;
 # long-term memory does not, because it is the team's own knowledge.
 READ_ONLY_TOOLS = ("skill_view",)
+
+# ECS gives a task 30s by default and at most 120s between SIGTERM and SIGKILL;
+# set the task's stopTimeout above this.
+SHUTDOWN_GRACE = 90.0
+HEARTBEAT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -106,6 +123,12 @@ class Host:
         self.agents = AgentRegistry(
             self._build, max_agents=config.max_agents, idle_seconds=config.agent_idle_seconds
         )
+        self.heartbeat = config.home / "heartbeat"
+        self._slots = asyncio.Semaphore(max(1, int(config.max_concurrent_turns)))
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
+        self._in_flight: set[asyncio.Task] = set()
+        self._live: dict[str, object] = {}  # session key -> agent mid-turn
+        self._stopping = asyncio.Event()
 
     # -- agents ---------------------------------------------------------
     def _build(self, session_key: str, source):
@@ -125,14 +148,76 @@ class Host:
 
     # -- running --------------------------------------------------------
     async def serve(self) -> None:
-        await asyncio.gather(*(self._drain(source) for source in self.sources))
+        """Run until every source is exhausted or SIGTERM/SIGINT arrives."""
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, self.stop)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass  # not the main thread, or not a platform with signals
+        drains = [asyncio.create_task(self._drain(source)) for source in self.sources]
+        beat = asyncio.create_task(self._beat())
+        waiter = asyncio.create_task(self._stopping.wait())
+        try:
+            await asyncio.wait([*drains, waiter], return_when=asyncio.FIRST_COMPLETED)
+            if not self._stopping.is_set():  # every source ran dry
+                await asyncio.gather(*drains, return_exceptions=True)
+        finally:
+            for task in (*drains, waiter):
+                task.cancel()
+            await self._finish_in_flight()
+            beat.cancel()
+            for source in self.sources:
+                close = getattr(source, "close", None)
+                if close is not None:
+                    await close()
+
+    def stop(self) -> None:
+        """Stop taking messages; turns in flight get SHUTDOWN_GRACE to finish."""
+        if not self._stopping.is_set():
+            log.info("stopping: draining %d turn(s) in flight", len(self._in_flight))
+            self._stopping.set()
 
     async def _drain(self, source: Source) -> None:
         async for message in source.messages():
-            try:
+            await self._slots.acquire()
+            if self._stopping.is_set():
+                self._slots.release()
+                return  # not acknowledged, so it is read again after restart
+            task = asyncio.create_task(self._process(source, message))
+            self._in_flight.add(task)
+            task.add_done_callback(self._in_flight.discard)
+
+    async def _process(self, source: Source, message: InboundMessage) -> None:
+        lock = self._conversation_locks.setdefault(message.session_key(), asyncio.Lock())
+        try:
+            async with lock:
                 await self.handle(message)
-            finally:
-                await source.ack(message)
+        except asyncio.CancelledError:
+            raise  # interrupted by shutdown: leave it unacknowledged
+        except Exception:
+            log.exception("handling %s failed", message.message_id)
+            await source.ack(message)
+        else:
+            await source.ack(message)
+        finally:
+            self._slots.release()
+
+    async def _finish_in_flight(self) -> None:
+        if not self._in_flight:
+            return
+        done, pending = await asyncio.wait(set(self._in_flight), timeout=SHUTDOWN_GRACE)
+        if pending:
+            log.warning("interrupting %d turn(s) still running after %.0fs", len(pending), SHUTDOWN_GRACE)
+            for agent in list(self._live.values()):
+                agent.interrupt()
+            await asyncio.wait(pending, timeout=10)
+
+    async def _beat(self) -> None:
+        self.heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            self.heartbeat.write_text(str(time.time()))
+            await asyncio.sleep(HEARTBEAT_SECONDS)
 
     async def handle(self, message: InboundMessage) -> str | None:
         """Run one message through the router, the agent, and the sinks."""
@@ -154,7 +239,11 @@ class Host:
         text = ""
         try:
             with self.agents.lease(key):
-                turn = await asyncio.to_thread(agent.run, message.text)
+                self._live[key] = agent
+                try:
+                    turn = await asyncio.to_thread(agent.run, message.text)
+                finally:
+                    self._live.pop(key, None)
             text, ok = turn.text, True
         except Exception:
             log.exception("turn failed for %s", message.message_id)

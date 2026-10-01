@@ -40,12 +40,15 @@ KEYS = (
     "learning",
     "database_url",
     "memory_backend",
+    "skill_backend",
     "memory_namespace",
     "imap_host",
     "imap_user",
     "imap_mailbox",
     "email_allow",
     "email_tools",
+    "max_concurrent_turns",
+    "disabled_tools",
 )
 
 
@@ -72,7 +75,9 @@ class Config:
     # Long-term memory: the team's shared knowledge. local | mem0 | hindsight.
     # The namespace is the team or org it belongs to — mem0's app_id,
     # Hindsight's bank. See memory.py.
-    memory_backend: str = "local"
+    memory_backend: str = "local"  # local | postgres | mem0 | hindsight
+    # Where skills are kept: "files" (skills_dir) or "postgres" (database_url).
+    skill_backend: str = "files"
     memory_namespace: str = "default"
     # How many conversations a message host keeps live at once, and how long an
     # idle one stays resident. See registry.AgentRegistry.
@@ -85,6 +90,11 @@ class Config:
     imap_mailbox: str = "INBOX"
     email_allow: str = ""
     email_tools: str = "skill_view"
+    # Messages a host works on at once (one conversation still runs in order).
+    max_concurrent_turns: int = 4
+    # Tools removed everywhere, comma-separated, patterns allowed. The
+    # container image sets "terminal": no shell on an unattended host.
+    disabled_tools: str = ""
     max_agents: int = DEFAULT_MAX_AGENTS
     agent_idle_seconds: float = DEFAULT_IDLE_SECONDS
     home: Path = field(default_factory=lambda: HOME)

@@ -35,7 +35,7 @@ from .memory import LongTermMemory, format_recall, open_memory
 from .providers import get_provider
 from .review import spawn_background_review
 from .session import SessionSource, build_session_key, is_shared_multi_user_session
-from .skills import SkillLibrary
+from .skills import SkillLibrary, open_skills
 from .state import Store, open_store
 from .tools import build_registry
 
@@ -99,7 +99,7 @@ class Agent:
         if provider is None and self.engine.name == "loop":
             provider = get_provider(self.config.provider)
         self._provider = provider
-        self.skills = skills or SkillLibrary(self.config.skills_dir)
+        self.skills = skills or open_skills(self.config)
         self.store = store or open_store(self.config)
         self.compactor = compactor or TailCompactor()
 

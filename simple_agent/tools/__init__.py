@@ -109,4 +109,10 @@ def build_registry(config, memory, skills, store) -> ToolRegistry:
     from ..mcp_client import register_servers
 
     register_servers(registry, config.home / "mcp.json")
+
+    disabled = [p.strip() for p in getattr(config, "disabled_tools", "").split(",") if p.strip()]
+    if disabled:
+        from fnmatch import fnmatchcase
+
+        registry = registry.subset([n for n in registry.names() if not any(fnmatchcase(n, p) for p in disabled)])
     return registry

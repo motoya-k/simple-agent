@@ -14,6 +14,7 @@ import urllib.request
 from typing import Any
 
 from .base import Provider, Response, ToolCall
+from .http import post_json
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
@@ -57,24 +58,17 @@ class AnthropicProvider(Provider):
         if tools:
             body["tools"] = tools
 
-        payload = json.dumps(body).encode("utf-8")
-        request = urllib.request.Request(
+        data = post_json(
             API_URL,
-            data=payload,
-            headers={
+            json.dumps(body).encode("utf-8"),
+            {
                 "content-type": "application/json",
                 "x-api-key": self.api_key,
                 "anthropic-version": API_VERSION,
             },
-            method="POST",
+            timeout=self.timeout,
+            vendor="Anthropic",
         )
-
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:  # surface the API's own message
-            detail = exc.read().decode("utf-8", "replace")[:2000]
-            raise RuntimeError(f"Anthropic API error {exc.code}: {detail}") from exc
 
         return self._normalize(data)
 

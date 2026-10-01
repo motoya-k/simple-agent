@@ -21,6 +21,7 @@ import urllib.request
 from typing import Any
 
 from .base import Provider, Response, ToolCall
+from .http import post_json
 
 API_URL = "https://api.openai.com/v1/responses"
 
@@ -53,22 +54,13 @@ class OpenAIResponsesProvider(Provider):
         body = build_request(
             system=system, messages=messages, tools=tools, max_tokens=max_tokens, model=model
         )
-        request = urllib.request.Request(
+        data = post_json(
             self.url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
+            json.dumps(body).encode("utf-8"),
+            {"content-type": "application/json", "authorization": f"Bearer {self.api_key}"},
+            timeout=self.timeout,
+            vendor="OpenAI",
         )
-
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:  # surface the API's own message
-            detail = exc.read().decode("utf-8", "replace")[:2000]
-            raise RuntimeError(f"OpenAI API error {exc.code}: {detail}") from exc
 
         return parse_response(data)
 
