@@ -28,7 +28,8 @@ import urllib.request
 from typing import Any
 
 from .base import Provider, Response, ToolCall
-from .sigv4 import Credentials, load_credentials, profile_region, sign
+from .http import post_json
+from .sigv4 import CredentialChain, Credentials, profile_region, sign
 
 DEFAULT_REGION = "ap-northeast-1"
 
@@ -48,7 +49,8 @@ class BedrockProvider(Provider):
         credentials: Credentials | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
-        self.credentials = None if self.api_key else (credentials or load_credentials())
+        self._chain = None if self.api_key or credentials else CredentialChain()
+        self._static = credentials
         if not self.api_key and self.credentials is None:
             raise RuntimeError(
                 "No Bedrock credentials. Set AWS_BEARER_TOKEN_BEDROCK (a Bedrock API "
@@ -62,6 +64,13 @@ class BedrockProvider(Provider):
             or DEFAULT_REGION
         )
         self.timeout = timeout
+
+    @property
+    def credentials(self) -> Credentials | None:
+        """Current IAM credentials — refreshed when temporary ones near expiry."""
+        if self._static is not None:
+            return self._static
+        return self._chain.get() if self._chain is not None else None
 
     def endpoint(self, model: str) -> str:
         # Inference profile ids contain ':' and '.', so quote the whole segment.
@@ -80,23 +89,20 @@ class BedrockProvider(Provider):
         body = build_request(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
         url = self.endpoint(model)
         payload = json.dumps(body).encode("utf-8")
-        headers = {"content-type": "application/json"}
-        if self.api_key:
-            headers["authorization"] = f"Bearer {self.api_key}"
-        else:
-            assert self.credentials is not None
-            headers = sign(
-                method="POST", url=url, headers=headers, body=payload,
-                credentials=self.credentials, region=self.region, service="bedrock",
-            )
-        request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:  # surface the API's own message
-            detail = exc.read().decode("utf-8", "replace")[:2000]
-            raise RuntimeError(f"Bedrock API error {exc.code}: {detail}") from exc
+        def headers() -> dict[str, str]:
+            # A function, so every retry is signed again with a fresh timestamp.
+            base = {"content-type": "application/json"}
+            if self.api_key:
+                return {**base, "authorization": f"Bearer {self.api_key}"}
+            credentials = self.credentials
+            assert credentials is not None
+            return sign(
+                method="POST", url=url, headers=base, body=payload,
+                credentials=credentials, region=self.region, service="bedrock",
+            )
+
+        data = post_json(url, payload, headers, timeout=self.timeout, vendor="Bedrock")
 
         return parse_response(data)
 

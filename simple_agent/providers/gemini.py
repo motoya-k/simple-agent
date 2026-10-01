@@ -24,6 +24,7 @@ import uuid
 from typing import Any
 
 from .base import Provider, Response, ToolCall
+from .http import post_json
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -53,19 +54,13 @@ class GeminiProvider(Provider):
     ) -> Response:
         body = build_request(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
         url = f"{API_BASE}/models/{urllib.parse.quote(model, safe='')}:generateContent"
-        request = urllib.request.Request(
+        data = post_json(
             url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"content-type": "application/json", "x-goog-api-key": self.api_key},
-            method="POST",
+            json.dumps(body).encode("utf-8"),
+            {"content-type": "application/json", "x-goog-api-key": self.api_key},
+            timeout=self.timeout,
+            vendor="Gemini",
         )
-
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:  # surface the API's own message
-            detail = exc.read().decode("utf-8", "replace")[:2000]
-            raise RuntimeError(f"Gemini API error {exc.code}: {detail}") from exc
 
         return parse_response(data)
 

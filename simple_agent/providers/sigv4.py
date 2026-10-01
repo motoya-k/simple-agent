@@ -1,9 +1,17 @@
 """AWS Signature Version 4 and credential lookup — standard library only.
 
-Enough of the AWS SDK's behaviour to call one JSON API with IAM credentials:
-static keys from the environment or a shared-credentials profile, optionally
-with a session token.  SSO and assume-role profiles are out of scope; refresh
-those with the AWS CLI and export the resulting keys, or use a Bedrock API key.
+Enough of the AWS SDK's behaviour to call one JSON API with IAM credentials,
+looked up in the SDK's order:
+
+1. ``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` (+ ``AWS_SESSION_TOKEN``)
+2. the ECS / Fargate task role (``AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`` or
+   ``..._FULL_URI``) — what a container in production uses
+3. a profile in ``~/.aws/credentials`` (``AWS_PROFILE``)
+4. the EC2 instance role, via IMDSv2
+
+Temporary credentials (2 and 4) expire; :class:`CredentialChain` refreshes
+them five minutes before they do.  SSO and assume-role profiles are out of
+scope; use a role attached to the task or instance instead.
 
 https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv-create-signed-request.html
 """
@@ -14,10 +22,18 @@ import configparser
 import datetime as _dt
 import hashlib
 import hmac
+import json
 import os
+import threading
+import time
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+ECS_HOST = "http://169.254.170.2"
+IMDS_HOST = "http://169.254.169.254"
+REFRESH_MARGIN = 300.0  # seconds before expiry
 
 
 @dataclass(frozen=True)
@@ -25,14 +41,95 @@ class Credentials:
     access_key: str
     secret_key: str
     session_token: str = ""
+    expires_at: float | None = None  # epoch seconds; None for static keys
 
 
-def load_credentials(profile: str | None = None) -> Credentials | None:
-    """Environment first, then the shared credentials file — the SDK's order."""
+class CredentialChain:
+    """Resolve credentials once, and again whenever temporary ones near expiry."""
+
+    def __init__(self, profile: str | None = None) -> None:
+        self.profile = profile
+        self._current: Credentials | None = None
+        self._lock = threading.Lock()
+
+    def get(self) -> Credentials | None:
+        with self._lock:
+            current = self._current
+            if current is None or (
+                current.expires_at is not None and current.expires_at - time.time() < REFRESH_MARGIN
+            ):
+                self._current = resolve_credentials(self.profile)
+            return self._current
+
+
+def resolve_credentials(profile: str | None = None) -> Credentials | None:
+    return (
+        _from_env()
+        or _from_container()
+        or load_credentials(profile)
+        or _from_instance()
+    )
+
+
+def _from_env() -> Credentials | None:
     access = os.environ.get("AWS_ACCESS_KEY_ID", "")
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
     if access and secret:
         return Credentials(access, secret, os.environ.get("AWS_SESSION_TOKEN", ""))
+    return None
+
+
+def _from_container() -> Credentials | None:
+    relative = os.environ.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+    full = os.environ.get("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+    if not (relative or full):
+        return None
+    url = ECS_HOST + relative if relative else full
+    headers = {}
+    token = os.environ.get("AWS_CONTAINER_AUTHORIZATION_TOKEN", "")
+    token_file = os.environ.get("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "")
+    if token_file:
+        token = Path(token_file).read_text().strip()
+    if token:
+        headers["Authorization"] = token
+    return _parse_temporary(_http("GET", url, headers, timeout=5))
+
+
+def _from_instance() -> Credentials | None:
+    if os.environ.get("AWS_EC2_METADATA_DISABLED", "").lower() == "true":
+        return None
+    try:
+        token = _http("PUT", f"{IMDS_HOST}/latest/api/token",
+                      {"X-aws-ec2-metadata-token-ttl-seconds": "21600"}, timeout=1)
+        auth = {"X-aws-ec2-metadata-token": token}
+        base = f"{IMDS_HOST}/latest/meta-data/iam/security-credentials/"
+        role = _http("GET", base, auth, timeout=1).splitlines()[0].strip()
+        return _parse_temporary(_http("GET", base + role, auth, timeout=1))
+    except (OSError, IndexError, ValueError):
+        return None  # not on EC2, or no role attached
+
+
+def _parse_temporary(body: str) -> Credentials:
+    data = json.loads(body)
+    expiration = data.get("Expiration")
+    expires_at = (
+        _dt.datetime.fromisoformat(expiration.replace("Z", "+00:00")).timestamp()
+        if expiration else None
+    )
+    return Credentials(data["AccessKeyId"], data["SecretAccessKey"], data.get("Token", ""), expires_at)
+
+
+def _http(method: str, url: str, headers: dict[str, str], *, timeout: float) -> str:
+    request = urllib.request.Request(url, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def load_credentials(profile: str | None = None) -> Credentials | None:
+    """Environment keys, else the shared credentials file. No network."""
+    env = _from_env()
+    if env:
+        return env
 
     profile = profile or os.environ.get("AWS_PROFILE") or "default"
     section = _read_ini(
