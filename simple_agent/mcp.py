@@ -30,12 +30,12 @@ SERVER_INFO = {"name": "simple-agent", "version": "0.2.0"}
 def build_tool_registry(config: Any, tools: list[str] | None) -> ToolRegistry:
     """The same toolset an Agent would get, narrowed to ``tools``."""
     from .memory import open_memory
-    from .skills import SkillLibrary
+    from .skills import open_skills
     from .state import open_store
     from .tools import build_registry
 
     registry = build_registry(
-        config, open_memory(config), SkillLibrary(config.skills_dir), open_store(config)
+        config, open_memory(config), open_skills(config), open_store(config)
     )
     return registry if tools is None else registry.subset(tools)
 

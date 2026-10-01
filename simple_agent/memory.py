@@ -240,12 +240,78 @@ class HindsightMemory:
         return f"Retained in Hindsight bank {self.namespace!r}."
 
 
+class PostgresMemory:
+    """:class:`LocalMemory` on a table, for hosts that keep nothing on disk.
+
+    Same recall (character-bigram overlap, so Japanese works) and the same
+    de-duplication; only the storage moves.  Recall scores the namespace's
+    newest ``SCAN_LIMIT`` memories in process — ample for a team's knowledge,
+    and it keeps recall identical across backends.
+    """
+
+    SCAN_LIMIT = 5000
+    _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS memories (
+        id         TEXT PRIMARY KEY,
+        namespace  TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        context    TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (namespace, content)
+    )"""
+
+    def __init__(self, url: str, namespace: str = "default") -> None:
+        import psycopg  # optional dependency: pip install 'simple-agent[postgres]'
+
+        self.namespace = namespace
+        self._conn = psycopg.connect(url, autocommit=True)
+        self._lock = threading.Lock()
+        with self._lock:
+            self._conn.execute(self._SCHEMA)
+
+    def recall(self, query: str, limit: int = 8) -> list[Memory]:
+        wanted = _bigrams(query)
+        if not wanted:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, content FROM memories WHERE namespace = %s "
+                "ORDER BY created_at DESC LIMIT %s",
+                (self.namespace, self.SCAN_LIMIT),
+            ).fetchall()
+        scored = []
+        for memory_id, content in rows:
+            overlap = len(wanted & _bigrams(content))
+            if overlap:
+                scored.append(Memory(memory_id, content, overlap / len(wanted)))
+        scored.sort(key=lambda m: m.score, reverse=True)
+        return scored[:limit]
+
+    def retain(self, content: str, *, context: str = "") -> str:
+        content = content.strip()
+        if not content:
+            return "Nothing to save."
+        with self._lock:
+            inserted = self._conn.execute(
+                "INSERT INTO memories (id, namespace, content, context) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (namespace, content) DO NOTHING",
+                (uuid.uuid4().hex, self.namespace, content, context),
+            ).rowcount
+        if not inserted:
+            return "Already in long-term memory."
+        return f"Saved to long-term memory ({self.namespace})."
+
+
 def open_memory(config: Any) -> LongTermMemory:
     """The long-term memory ``config.memory_backend`` names."""
     backend = config.memory_backend
     namespace = config.memory_namespace
     if backend == "local":
         return LocalMemory(config.memories_dir, namespace)
+    if backend == "postgres":
+        if not config.database_url:
+            raise ValueError("memory_backend=postgres needs database_url")
+        return PostgresMemory(config.database_url, namespace)
     if backend == "mem0":
         key = os.environ.get("MEM0_API_KEY", "")
         if not key:
@@ -253,11 +319,12 @@ def open_memory(config: Any) -> LongTermMemory:
         return Mem0Memory(key, namespace)
     if backend == "hindsight":
         return HindsightMemory(namespace)
-    raise ValueError(f"Unknown memory_backend: {backend!r} (local | mem0 | hindsight)")
+    raise ValueError(f"Unknown memory_backend: {backend!r} (local | postgres | mem0 | hindsight)")
 
 
 __all__ = [
     "HindsightMemory",
+    "PostgresMemory",
     "LocalMemory",
     "LongTermMemory",
     "Mem0Memory",

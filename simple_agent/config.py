@@ -40,6 +40,7 @@ KEYS = (
     "learning",
     "database_url",
     "memory_backend",
+    "skill_backend",
     "memory_namespace",
     "imap_host",
     "imap_user",
@@ -74,7 +75,9 @@ class Config:
     # Long-term memory: the team's shared knowledge. local | mem0 | hindsight.
     # The namespace is the team or org it belongs to — mem0's app_id,
     # Hindsight's bank. See memory.py.
-    memory_backend: str = "local"
+    memory_backend: str = "local"  # local | postgres | mem0 | hindsight
+    # Where skills are kept: "files" (skills_dir) or "postgres" (database_url).
+    skill_backend: str = "files"
     memory_namespace: str = "default"
     # How many conversations a message host keeps live at once, and how long an
     # idle one stays resident. See registry.AgentRegistry.
