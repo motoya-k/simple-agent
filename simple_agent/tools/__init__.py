@@ -66,11 +66,16 @@ class ToolRegistry:
         return [tool.schema() for tool in self._tools.values()]
 
     def subset(self, names: list[str]) -> "ToolRegistry":
-        """A registry with only some tools — how the reviewer gets narrow powers."""
+        """A registry with only some tools — how the reviewer gets narrow powers.
+
+        Entries may be shell-style patterns, so a route can allow a whole MCP
+        server's read tools (``google__*_list``) without naming each one.
+        """
+        from fnmatch import fnmatchcase
+
         clone = ToolRegistry()
-        for name in names:
-            tool = self._tools.get(name)
-            if tool is not None:
+        for name, tool in self._tools.items():
+            if any(fnmatchcase(name, pattern) for pattern in names):
                 clone.register(tool)
         return clone
 
@@ -100,4 +105,8 @@ def build_registry(config, memory, skills, store) -> ToolRegistry:
     memory_tool.register(registry, memory)
     skill_tool.register(registry, skills)
     session_search.register(registry, store)
+
+    from ..mcp_client import register_servers
+
+    register_servers(registry, config.home / "mcp.json")
     return registry

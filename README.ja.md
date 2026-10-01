@@ -71,6 +71,22 @@ memory_backend: mem0    # 記憶。pi も simple-agent のツール経由で読�
 
 ハーネスが決めるのは「どう進めるか」で、「何の仕事か」ではありません。PM 向け、営業向け、マーケ向けのエージェントは、同じハーネスに別のツール（MCP サーバー）とスキルを渡したものです。
 
+## MCP サーバーをつなぐ
+
+`~/.simple-agent/mcp.json` にサーバーを書きます。形式は Claude Desktop・Cursor・Claude Code と同じです。
+
+```json
+{"mcpServers": {"google": {"command": "uvx", "args": ["some-google-workspace-mcp"], "env": {"...": "..."}}}}
+```
+
+サーバーのツールは `<サーバー名>__<ツール名>`（例：`google__calendar_list`）としてエージェントに加わり、どのエンジンでも使えます。外部のハーネスには `simple-agent --mcp` を通して届くので、サーバーの設定は 1 か所で済みます。許可リストにはワイルドカードが使えるので、たとえばメール経由のルートには読み取り系のツールだけを渡せます。
+
+```bash
+SIMPLE_AGENT_EMAIL_TOOLS='skill_view,google__*_list,google__*_get' simple-agent --email
+```
+
+対応しているのは標準入出力（stdio）で動くサーバーだけです。起動できなかったサーバーはログに記録して飛ばします。
+
 ## メール
 
 ```bash
