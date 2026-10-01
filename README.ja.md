@@ -118,6 +118,15 @@ COPY --chown=agent:agent mcp.json /home/agent/.simple-agent/mcp.json
 - **秘密情報は Secrets Manager から環境変数として渡します**（`SIMPLE_AGENT_IMAP_PASSWORD`、データベースの URL、MCP サーバー用のキー）。MCP サーバーは環境変数を引き継ぎます。
 - `stopTimeout: 120`（SIGTERM を受けてから、処理中の会話に 90 秒の猶予を与えるため）、`initProcessEnabled: true`（終了した MCP サーバーのプロセスを回収するため）、`desiredCount: 1` にします。
 
+`deploy/terraform` を使うと、ここまでの構成を既存の VPC の中にまとめて作れます。作るのは、ECR、クラスタとサービス、タスクロールと実行ロール（Bedrock の権限は、設定した 2 つの推論プロファイルに限定）、Secrets Manager の項目、ログ、RDS Postgres です。
+
+```bash
+cd deploy/terraform && cp terraform.tfvars.example terraform.tfvars  # 値を埋める
+terraform init -backend-config="bucket=..." -backend-config="key=simple-agent.tfstate" \
+  -backend-config="region=ap-northeast-1" -backend-config="encrypt=true"
+terraform apply
+```
+
 モデルの呼び出しは、429 や 5xx が返ると間隔をあけて再試行します。同時に処理する会話は最大 `SIMPLE_AGENT_MAX_CONCURRENT_TURNS`（既定は 4）件で、1 つの会話の中では順番どおりに処理します。
 
 ## 開発

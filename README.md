@@ -154,6 +154,17 @@ Run one task with:
 - `stopTimeout: 120` (turns in flight get 90s to finish after SIGTERM),
   `initProcessEnabled: true` (reaps MCP server processes), `desiredCount: 1`.
 
+`deploy/terraform` sets all of this up in an existing VPC — ECR, the cluster
+and service, task and execution roles (Bedrock limited to the two configured
+inference profiles), Secrets Manager entries, logs, and an RDS Postgres:
+
+```bash
+cd deploy/terraform && cp terraform.tfvars.example terraform.tfvars  # fill in
+terraform init -backend-config="bucket=..." -backend-config="key=simple-agent.tfstate" \
+  -backend-config="region=ap-northeast-1" -backend-config="encrypt=true"
+terraform apply
+```
+
 Model calls retry 429/5xx with backoff; up to `SIMPLE_AGENT_MAX_CONCURRENT_TURNS`
 (default 4) conversations run at once, each one in order.
 
