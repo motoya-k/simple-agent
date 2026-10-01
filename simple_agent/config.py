@@ -46,6 +46,8 @@ KEYS = (
     "imap_mailbox",
     "email_allow",
     "email_tools",
+    "max_concurrent_turns",
+    "disabled_tools",
 )
 
 
@@ -85,6 +87,11 @@ class Config:
     imap_mailbox: str = "INBOX"
     email_allow: str = ""
     email_tools: str = "skill_view"
+    # Messages a host works on at once (one conversation still runs in order).
+    max_concurrent_turns: int = 4
+    # Tools removed everywhere, comma-separated, patterns allowed. The
+    # container image sets "terminal": no shell on an unattended host.
+    disabled_tools: str = ""
     max_agents: int = DEFAULT_MAX_AGENTS
     agent_idle_seconds: float = DEFAULT_IDLE_SECONDS
     home: Path = field(default_factory=lambda: HOME)
