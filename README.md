@@ -127,6 +127,36 @@ toolset: mail runs with read-only tools by default (`SIMPLE_AGENT_EMAIL_TOOLS`),
 and without the background review, so a message cannot write memory or skills
 that your trusted sessions later load. Widen it knowingly.
 
+## Deploy (AWS ECS Fargate)
+
+The image holds the agent only. Production defaults are baked in: a non-root
+user, JSON logs, no `terminal` tool, a health check (`simple-agent --health`),
+and `simple-agent --email` as the command. What is yours — MCP servers and
+their configuration — goes in an image built from it:
+
+```dockerfile
+FROM ghcr.io/you/simple-agent:latest          # built from this repo's Dockerfile
+RUN pip install --user workspace-mcp==1.30.0  # pin what you run
+COPY mcp.json /home/agent/.simple-agent/mcp.json
+```
+
+Run one task with:
+
+- **State in Postgres** (RDS/Aurora), so the container keeps nothing:
+  `SIMPLE_AGENT_DATABASE_URL`, `SIMPLE_AGENT_MEMORY_BACKEND=postgres`,
+  `SIMPLE_AGENT_SKILL_BACKEND=postgres`.
+- **A task role** with `bedrock:InvokeModel` on the inference profile and the
+  models it routes to. Credentials come from the role and are refreshed
+  automatically; no keys in the task.
+- **Secrets from Secrets Manager** as environment variables
+  (`SIMPLE_AGENT_IMAP_PASSWORD`, the database URL, MCP servers' keys — MCP
+  servers inherit the environment).
+- `stopTimeout: 120` (turns in flight get 90s to finish after SIGTERM),
+  `initProcessEnabled: true` (reaps MCP server processes), `desiredCount: 1`.
+
+Model calls retry 429/5xx with backoff; up to `SIMPLE_AGENT_MAX_CONCURRENT_TURNS`
+(default 4) conversations run at once, each one in order.
+
 ## Development
 
 ```bash
