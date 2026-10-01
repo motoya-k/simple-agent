@@ -7,9 +7,8 @@ Cursor, and Claude Code already use, so an existing entry can be pasted in::
 
 Each server's tools join the agent's registry as ``<server>__<tool>``.  From
 there they are ordinary tools: a route's allowlist narrows them like any other
-(``google__calendar_*`` works), and external harnesses receive them through
-``simple-agent --mcp`` like every other bridged tool — so a server is declared
-once and every engine can use it.
+(``google__calendar_*`` works), and other harnesses receive them through
+``simple-agent --mcp`` like every other tool — so a server is declared once.
 
 One process per server, shared by every agent in this process and started on
 first use.  A server that fails to start is logged and skipped; the agent runs
