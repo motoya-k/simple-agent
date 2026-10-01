@@ -2,8 +2,7 @@
 
 One class, reusable from anywhere: a REPL, a chat gateway, a cron job, a
 subagent.  It owns the transcript, assembles the system prompt exactly once,
-and delegates the turn itself to an engine (:mod:`simple_agent.engines`) — by
-default :func:`simple_agent.loop.run_conversation`.
+and runs each turn through :func:`simple_agent.loop.run_conversation`.
 
 Everything it holds is an injected collaborator — provider, tools, memory,
 skills, store, compactor — so a different host swaps parts without forking the
@@ -29,8 +28,7 @@ from typing import Any, Callable, Iterable
 from .compaction import Compactor, TailCompactor
 from .config import Config
 from .context import session_scope
-from .engines import Engine, get_engine
-from .loop import Budget, Turn
+from .loop import Budget, Turn, run_conversation
 from .memory import LongTermMemory, format_recall, open_memory
 from .providers import get_provider
 from .review import spawn_background_review
@@ -80,7 +78,6 @@ class Agent:
         store: Store | None = None,
         compactor: Compactor | None = None,
         tools: Iterable[str] | None = None,
-        engine: Engine | None = None,
     ) -> None:
         self.config = config or Config.load()
         self.cwd = cwd or os.getcwd()
@@ -88,17 +85,8 @@ class Agent:
         self.session_key = session_key or build_session_key(self.source)
         self.shared = is_shared_multi_user_session(self.source)
 
-        self.engine = engine or _engine_for(self.config)
-        if not self.engine.supports(self.config.provider):
-            raise RuntimeError(
-                f"engine {self.engine.name!r} cannot run provider {self.config.provider!r}"
-            )
-        # The pi engine brings its own model; a provider is then needed only
-        # for the background review, so it is built when first asked for. The
-        # loop needs one every turn, so a missing API key fails here, at start.
-        if provider is None and self.engine.name == "loop":
-            provider = get_provider(self.config.provider)
-        self._provider = provider
+        # Built here so a missing API key fails at start, not on the first turn.
+        self.provider = provider or get_provider(self.config.provider)
         self.skills = skills or open_skills(self.config)
         self.store = store or open_store(self.config)
         self.compactor = compactor or TailCompactor()
@@ -153,12 +141,6 @@ class Agent:
         sections.append(f"<skills>\n{self.skills.catalog()}\n</skills>")
         return "\n\n".join(sections)
 
-    @property
-    def provider(self) -> Any:
-        if self._provider is None:
-            self._provider = get_provider(self.config.provider)
-        return self._provider
-
     # -- running --------------------------------------------------------
     def interrupt(self) -> None:
         """Ask the current turn to stop. Safe to call from another thread."""
@@ -178,8 +160,15 @@ class Agent:
             self._append_user(self._with_recall(user_input))
 
             try:
-                turn = self.engine.run(
-                    self, on_event=on_event, interrupt=lambda: self._interrupted
+                turn = run_conversation(
+                    provider=self.provider,
+                    model=self.config.model,
+                    system=self.system,
+                    messages=self.messages,
+                    registry=self.registry,
+                    budget=self.budget,
+                    on_event=on_event,
+                    interrupt=lambda: self._interrupted,
                 )
             finally:
                 # Persist whatever the turn produced even when it failed
@@ -302,12 +291,3 @@ class Agent:
             # memory forgot it, so long-term memory may supply it again.
             self._recalled.clear()
 
-
-def _engine_for(config: Config) -> Engine:
-    if config.engine == "loop":
-        return get_engine("loop")
-    return get_engine(
-        config.engine,
-        command=config.engine_command or config.pi_command,
-        args=config.engine_args or config.pi_args,
-    )

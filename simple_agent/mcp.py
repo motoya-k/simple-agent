@@ -1,13 +1,11 @@
 """``simple-agent --mcp`` — this agent's tools, served over MCP on stdio.
 
-The bridge that keeps the three choices independent.  An external harness
-(Claude Code, Codex, pi through its extension) runs its own loop, but memory,
-skills, and session search are ours: whichever memory backend is configured,
-whichever harness is running, the model reaches the *same* memory through this
-server.  The harness owns the loop; the agent owns what the loop can touch.
+How another harness (Claude Code, Codex, Goose, ...) reaches this agent's
+memory, skills, and session search: register this server in that harness and
+its model reads and writes the *same* memory as ours, whichever backend is
+configured.  The harness owns its loop; we own what the loop can touch.
 
-``--tools`` is an allowlist and the engine always passes one, so a route that
-narrowed its toolset stays narrowed across the process boundary.
+``--tools`` is an allowlist, so a harness can be given a narrowed toolset.
 
 Newline-delimited JSON-RPC 2.0, the MCP stdio transport.  Only what a tool
 server needs: ``initialize``, ``tools/list``, ``tools/call``, ``ping``.
