@@ -86,6 +86,26 @@ The harness decides *how* the work is done, not *what* it is about: a PM,
 sales, or marketing agent is the same harness given different tools (MCP
 servers) and skills.
 
+## Connect MCP servers
+
+Put servers in `~/.simple-agent/mcp.json`, in the same format Claude Desktop,
+Cursor, and Claude Code use:
+
+```json
+{"mcpServers": {"google": {"command": "uvx", "args": ["some-google-workspace-mcp"], "env": {"...": "..."}}}}
+```
+
+Their tools join the agent as `<server>__<tool>` (e.g. `google__calendar_list`),
+on every engine: external harnesses receive them through `simple-agent --mcp`,
+so a server is declared once. Allowlists accept patterns, so a route can take
+a server's read tools only:
+
+```bash
+SIMPLE_AGENT_EMAIL_TOOLS='skill_view,google__*_list,google__*_get' simple-agent --email
+```
+
+Stdio servers only. A server that fails to start is logged and skipped.
+
 ## Email
 
 ```bash
