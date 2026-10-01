@@ -31,7 +31,9 @@ PROVIDER_DEFAULT_MODELS = {
 KEYS = (
     "provider",
     "engine",
-    "pi_command",
+    "engine_command",
+    "engine_args",
+    "pi_command",  # older names for engine_command / engine_args
     "pi_args",
     "model",
     "review_model",
@@ -50,10 +52,13 @@ KEYS = (
 @dataclass
 class Config:
     provider: str = "anthropic"
-    # Who runs the turn: "loop" (this repo) or "pi" (an external harness; see
-    # engines/pi.py). pi_args is passed through, e.g. its --provider/--model.
+    # Who runs the turn: "loop" (this repo) or an external harness — "pi",
+    # "claude-code", ... (see engines/). engine_command overrides the executable;
+    # engine_args is passed through to it, e.g. to override its model flag.
     engine: str = "loop"
-    pi_command: str = "pi"
+    engine_command: str = ""
+    engine_args: str = ""
+    pi_command: str = ""
     pi_args: str = ""
     model: str = ""  # empty = the provider's default
     review_model: str = ""

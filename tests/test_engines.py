@@ -135,3 +135,202 @@ def test_loop_is_the_default_engine(config):
     agent = Agent(config, provider=Echo())
     assert isinstance(agent.engine, LoopEngine)
     assert agent.run("hi").text == "ok"
+
+
+# -- Claude Code -------------------------------------------------------------
+
+FAKE_CLAUDE = textwrap.dedent(
+    """
+    import json, sys
+    with open(sys.argv[1], "w") as f:
+        json.dump(sys.argv[2:], f)
+    events = [
+        {"type": "system", "subtype": "init"},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__simple-agent__memory_save", "input": {}}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "saved"}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "saved",
+         "usage": {"input_tokens": 5, "output_tokens": 2}},
+    ]
+    for event in events:
+        print(json.dumps(event))
+    """
+)
+
+
+@pytest.fixture
+def fake_claude(tmp_path):
+    from simple_agent.engines.claude_code import ClaudeCodeEngine
+
+    script = tmp_path / "fake_claude.py"
+    script.write_text(FAKE_CLAUDE)
+    argv_file = tmp_path / "claude_argv.json"
+    return ClaudeCodeEngine(command=f"{sys.executable} {script} {argv_file}"), argv_file
+
+
+def test_claude_code_gets_our_tools_over_mcp_and_resumes(tmp_path, fake_claude):
+    engine, argv_file = fake_claude
+    config = Config(home=tmp_path, provider="bedrock", learning=False)
+    agent = Agent(config, engine=engine, provider=Unused(), tools=["read_file", "memory_save"])
+
+    turn = agent.run("remember this")
+    first = json.loads(argv_file.read_text())
+
+    assert turn.text == "saved" and turn.tool_calls == 1 and turn.tokens == 7
+    assert first[first.index("--tools") + 1] == "Glob,Grep,Read"
+    allowed = first[first.index("--allowedTools") + 1].split(",")
+    assert allowed == ["Glob", "Grep", "Read", "mcp__simple-agent__memory_save"]
+    mcp = json.loads(first[first.index("--mcp-config") + 1])["mcpServers"]["simple-agent"]
+    assert mcp["args"][mcp["args"].index("--tools") + 1] == "memory_save"  # narrowed too
+    assert first[first.index("--permission-mode") + 1] == "dontAsk"
+    assert first[first.index("--setting-sources") + 1] == ""
+    assert first[first.index("--model") + 1] == "jp.anthropic.claude-sonnet-4-6"
+    assert engine.environment(agent)["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    session = first[first.index("--session-id") + 1]
+
+    agent.run("again")
+    second = json.loads(argv_file.read_text())
+    assert "--session-id" not in second and second[second.index("--resume") + 1] == session
+
+
+def test_claude_code_with_no_tools_disables_every_builtin(tmp_path, fake_claude):
+    engine, argv_file = fake_claude
+    Agent(Config(home=tmp_path, learning=False), engine=engine, provider=Unused(), tools=[]).run("hi")
+    argv = json.loads(argv_file.read_text())
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--allowedTools" not in argv and "--mcp-config" not in argv
+
+
+def test_claude_code_rejects_providers_it_cannot_run(tmp_path):
+    from simple_agent.engines.claude_code import ClaudeCodeEngine
+
+    config = Config(home=tmp_path, provider="gemini", learning=False)
+    with pytest.raises(RuntimeError, match="cannot run provider 'gemini'"):
+        Agent(config, engine=ClaudeCodeEngine(), provider=Unused())
+
+
+# -- Goose -------------------------------------------------------------------
+
+FAKE_GOOSE = textwrap.dedent(
+    """
+    import json, sys
+    with open(sys.argv[1], "w") as f:
+        json.dump(sys.argv[2:], f)
+    print("    __( O)>  banner lines are not JSON")
+    def msg(role, *content):
+        return {"type": "message", "message": {"role": role, "content": list(content)}}
+    events = [
+        msg("assistant", {"type": "text", "text": "let me check"}),
+        msg("assistant", {"type": "toolRequest",
+            "toolCall": {"status": "success", "value": {"name": "simple-agent__memory_search"}}}),
+        msg("user", {"type": "toolResponse"}),
+        msg("assistant", {"type": "text", "text": "Launch is "}),
+        msg("assistant", {"type": "text", "text": "Nov 3."}),
+        {"type": "complete", "total_tokens": 42},
+    ]
+    for event in events:
+        print(json.dumps(event))
+    """
+)
+
+
+@pytest.fixture
+def fake_goose(tmp_path):
+    from simple_agent.engines.goose import GooseEngine
+
+    script = tmp_path / "fake_goose.py"
+    script.write_text(FAKE_GOOSE)
+    argv_file = tmp_path / "goose_argv.json"
+    return GooseEngine(command=f"{sys.executable} {script} {argv_file}"), argv_file
+
+
+def test_goose_joins_the_streamed_answer_and_resumes_without_re_adding(tmp_path, fake_goose):
+    engine, argv_file = fake_goose
+    agent = Agent(Config(home=tmp_path, provider="bedrock", learning=False), engine=engine, provider=Unused())
+
+    turn = agent.run("when is launch?")
+    first = json.loads(argv_file.read_text())
+
+    assert turn.text == "Launch is Nov 3."  # only the text after the last tool result
+    assert (turn.tool_calls, turn.tokens) == (1, 42)
+    assert first[first.index("--provider") + 1] == "aws_bedrock"
+    assert first[first.index("--with-builtin") + 1] == "developer"  # full toolset allowed
+    extension = first[first.index("--with-extension") + 1]
+    assert extension.startswith("simple-agent:") and "--session-key" not in extension
+    assert "--resume" not in first
+
+    agent.run("again")
+    second = json.loads(argv_file.read_text())
+    assert "--resume" in second and second[second.index("--name") + 1] == first[first.index("--name") + 1]
+    assert "--with-extension" not in second and "--with-builtin" not in second  # restored by goose
+
+
+def test_goose_without_the_full_toolset_bridges_our_file_tools_instead(tmp_path, fake_goose):
+    engine, argv_file = fake_goose
+    Agent(Config(home=tmp_path, provider="bedrock", learning=False), engine=engine,
+          provider=Unused(), tools=["read_file", "skill_view"]).run("hi")
+    argv = json.loads(argv_file.read_text())
+    assert "--with-builtin" not in argv  # no shell sneaks in with the developer bundle
+    extension = argv[argv.index("--with-extension") + 1]
+    assert "--tools read_file,skill_view" in extension
+
+
+# -- OpenCode ----------------------------------------------------------------
+
+FAKE_OPENCODE = textwrap.dedent(
+    """
+    import json, os, sys
+    with open(sys.argv[1], "w") as f:
+        json.dump({"argv": sys.argv[2:], "config": json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])}, f)
+    def ev(kind, **part):
+        return {"type": kind, "sessionID": "ses_abc", "part": part}
+    for event in [
+        ev("step_start"), ev("text", text="checking"), ev("tool_use", tool="simple-agent_memory_search"),
+        ev("step_finish", tokens={"input": 3, "output": 1}),
+        ev("step_start"), ev("text", text="PM standup "), ev("text", text="is 9:30."),
+        ev("step_finish", tokens={"input": 4, "output": 2}),
+    ]:
+        print(json.dumps(event))
+    """
+)
+
+
+@pytest.fixture
+def fake_opencode(tmp_path):
+    from simple_agent.engines.opencode import OpenCodeEngine
+
+    script = tmp_path / "fake_opencode.py"
+    script.write_text(FAKE_OPENCODE)
+    record = tmp_path / "opencode_run.json"
+    return OpenCodeEngine(command=f"{sys.executable} {script} {record}"), record
+
+
+def test_opencode_denies_everything_then_allows_our_list(tmp_path, fake_opencode):
+    engine, record = fake_opencode
+    config = Config(home=tmp_path, provider="bedrock", learning=False)
+    agent = Agent(config, engine=engine, provider=Unused(), tools=["read_file", "memory_search"])
+
+    turn = agent.run("when is standup?")
+    first = json.loads(record.read_text())
+
+    assert turn.text == "PM standup is 9:30." and turn.tool_calls == 1 and turn.tokens == 10
+    tools = first["config"]["tools"]
+    assert tools == {"*": False, "glob": True, "grep": True, "list": True, "read": True,
+                     "simple-agent_*": True}
+    server = first["config"]["mcp"]["simple-agent"]["command"]
+    assert server[server.index("--tools") + 1] == "memory_search"
+    assert open(first["config"]["instructions"][0]).read() == agent.system
+    argv = first["argv"]
+    assert argv[argv.index("--model") + 1] == "amazon-bedrock/jp.anthropic.claude-sonnet-4-6"
+    assert "--session" not in argv
+
+    agent.run("again")
+    second = json.loads(record.read_text())["argv"]
+    assert second[second.index("--session") + 1] == "ses_abc"
+
+
+def test_opencode_with_no_tools_gets_no_mcp_server(tmp_path, fake_opencode):
+    engine, record = fake_opencode
+    Agent(Config(home=tmp_path, learning=False), engine=engine, provider=Unused(), tools=[]).run("hi")
+    config = json.loads(record.read_text())["config"]
+    assert config["tools"] == {"*": False} and "mcp" not in config

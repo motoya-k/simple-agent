@@ -43,7 +43,8 @@ def register(registry, memory) -> None:
             "how this team wants work done. Do NOT save what is only true for this "
             "conversation (that is already in the transcript), procedures that would "
             "work at any company (write a skill), or secrets. One self-contained "
-            "fact per call."
+            "fact per call, in the words it was given: do not add reasons, owners, "
+            "or instructions nobody stated."
         ),
         parameters={
             "type": "object",

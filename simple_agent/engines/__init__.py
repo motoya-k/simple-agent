@@ -65,6 +65,9 @@ class LoopEngine(Engine):
 _REGISTRY: dict[str, str] = {
     "loop": "simple_agent.engines:LoopEngine",
     "pi": "simple_agent.engines.pi:PiEngine",
+    "claude-code": "simple_agent.engines.claude_code:ClaudeCodeEngine",
+    "goose": "simple_agent.engines.goose:GooseEngine",
+    "opencode": "simple_agent.engines.opencode:OpenCodeEngine",
 }
 
 
