@@ -1,4 +1,8 @@
-"""Memory and skills behave the same on every backend.
+"""Memory and skills behave the same wherever they are kept.
+
+One setting decides that, ``database_url``, and it decides it for all three
+things the agent writes — transcripts, memory, skills — so there is no way to
+half-move a deployment.
 
 Postgres runs when ``SIMPLE_AGENT_TEST_DATABASE_URL`` is set; see
 test_state_contract.py for how to start one.
@@ -10,8 +14,10 @@ import os
 
 import pytest
 
-from simple_agent.memory import LocalMemory
-from simple_agent.skills import FileSkillStore, SkillLibrary
+from simple_agent.config import Config
+from simple_agent.memory import LocalMemory, PostgresMemory, open_memory
+from simple_agent.skills import FileSkillStore, PostgresSkillStore, SkillLibrary, open_skills
+from simple_agent.state import SqliteStore, open_store
 
 PG_URL = os.environ.get("SIMPLE_AGENT_TEST_DATABASE_URL", "")
 
@@ -29,8 +35,6 @@ def memory(request, tmp_path):
     if request.param == "local":
         return LocalMemory(tmp_path, "team")
     _postgres("memories")
-    from simple_agent.memory import PostgresMemory
-
     return PostgresMemory(PG_URL, "team")
 
 
@@ -39,9 +43,32 @@ def library(request, tmp_path):
     if request.param == "files":
         return SkillLibrary(FileSkillStore(tmp_path / "skills"))
     _postgres("skills")
-    from simple_agent.skills import PostgresSkillStore
-
     return SkillLibrary(PostgresSkillStore(PG_URL))
+
+
+def test_no_database_url_keeps_everything_in_files(tmp_path):
+    config = Config(home=tmp_path)
+    assert isinstance(open_store(config), SqliteStore)
+    assert isinstance(open_memory(config), LocalMemory)
+    assert isinstance(open_skills(config).store, FileSkillStore)
+
+
+def test_a_database_url_moves_all_three_at_once(tmp_path):
+    if not PG_URL:
+        pytest.skip("SIMPLE_AGENT_TEST_DATABASE_URL not set")
+    pytest.importorskip("psycopg")
+    config = Config(home=tmp_path, database_url=PG_URL)
+    from simple_agent.state_postgres import PostgresStore
+
+    assert isinstance(open_store(config), PostgresStore)
+    assert isinstance(open_memory(config), PostgresMemory)
+    assert isinstance(open_skills(config).store, PostgresSkillStore)
+
+
+def test_a_namespace_scopes_memory_without_touching_the_setting(tmp_path):
+    config = Config(home=tmp_path, memory_namespace="acme")
+    assert open_memory(config).namespace == "acme"
+    assert open_memory(config, "support").namespace == "support"
 
 
 def test_memory_retains_once_and_recalls_japanese(memory):

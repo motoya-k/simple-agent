@@ -10,12 +10,12 @@ locals {
   # What the image's defaults do not already say. Deployment-specific values
   # (IMAP host, allowlist, ...) come in through var.environment.
   base_env = {
-    SIMPLE_AGENT_PROVIDER       = "bedrock"
-    SIMPLE_AGENT_MODEL          = var.model
-    SIMPLE_AGENT_REVIEW_MODEL   = var.review_model
-    SIMPLE_AGENT_MEMORY_BACKEND = "postgres"
-    SIMPLE_AGENT_SKILL_BACKEND  = "postgres"
-    AWS_REGION                  = var.region
+    SIMPLE_AGENT_PROVIDER     = "bedrock"
+    SIMPLE_AGENT_MODEL        = var.model
+    SIMPLE_AGENT_REVIEW_MODEL = var.review_model
+    # Transcripts, memory and skills all follow SIMPLE_AGENT_DATABASE_URL,
+    # which is a secret below: nothing is left on the container's disk.
+    AWS_REGION = var.region
   }
 }
 

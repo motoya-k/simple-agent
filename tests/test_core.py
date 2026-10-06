@@ -13,7 +13,7 @@ from simple_agent.compaction import TailCompactor  # noqa: E402
 from simple_agent.config import Config  # noqa: E402
 from simple_agent.context import current_session_key, session_scope  # noqa: E402
 from simple_agent.loop import Budget, run_conversation  # noqa: E402
-from simple_agent.memory import HindsightMemory, LocalMemory, Mem0Memory, Memory  # noqa: E402
+from simple_agent.memory import LocalMemory  # noqa: E402
 from simple_agent.providers.base import Provider, Response, ToolCall  # noqa: E402
 from simple_agent.registry import AgentRegistry  # noqa: E402
 from simple_agent.session import (  # noqa: E402
@@ -255,56 +255,6 @@ def test_long_term_memory_recalls_japanese_by_relevance(config):
     assert LocalMemory(config.memories_dir, "team-b").recall("リリース") == []  # namespaced
 
 
-class FakeHTTP:
-    """Stands in for urlopen: records each request, answers with ``payload``."""
-
-    def __init__(self, payload):
-        self.payload = payload
-        self.requests = []
-
-    def __call__(self, request, timeout=None):
-        import io
-        import json
-
-        self.requests.append(
-            (request.full_url, dict(request.header_items()), json.loads(request.data))
-        )
-        body = io.BytesIO(json.dumps(self.payload).encode())
-        body.__enter__ = lambda: body
-        body.__exit__ = lambda *a: None
-        return body
-
-
-def test_mem0_scopes_team_memory_by_app_id(monkeypatch):
-    http = FakeHTTP({"results": [{"id": "m1", "memory": "Deploys on Fridays", "score": 0.9}]})
-    monkeypatch.setattr("urllib.request.urlopen", http)
-    memory = Mem0Memory("key", "acme", base_url="https://mem0.test")
-
-    assert memory.recall("deploy") == [Memory("m1", "Deploys on Fridays", 0.9)]
-    memory.retain("Ops owns deploys", context="slack")
-
-    (search_url, headers, search), (add_url, _, add) = http.requests
-    assert search_url == "https://mem0.test/v3/memories/search/"
-    assert headers["Authorization"] == "Token key"
-    assert search["filters"] == {"app_id": "acme"}
-    assert add_url == "https://mem0.test/v3/memories/add/"
-    assert add["app_id"] == "acme" and add["messages"][0]["content"] == "Ops owns deploys"
-
-
-def test_hindsight_uses_the_namespace_as_its_bank(monkeypatch):
-    http = FakeHTTP({"results": [{"id": "h1", "text": "Ops owns deploys"}]})
-    monkeypatch.setattr("urllib.request.urlopen", http)
-    memory = HindsightMemory("acme", base_url="http://hs.test")
-
-    assert [m.text for m in memory.recall("who deploys")] == ["Ops owns deploys"]
-    memory.retain("Deploys on Fridays", context="slack")
-    (recall_url, _, recall), (retain_url, _, retain) = http.requests
-    assert recall_url == "http://hs.test/v1/default/banks/acme/memories/recall"
-    assert recall["query"] == "who deploys"
-    assert retain_url == "http://hs.test/v1/default/banks/acme/memories"
-    assert retain["items"] == [{"content": "Deploys on Fridays", "context": "slack"}]
-
-
 # -- skills ---------------------------------------------------------------
 def test_skills_round_trip_and_never_delete(config):
     library = SkillLibrary(config.skills_dir)
@@ -497,7 +447,7 @@ def test_untrusted_routes_are_not_handed_team_memory(config):
 def test_a_memory_backend_outage_costs_the_recall_not_the_turn(config):
     class Down(LocalMemory):
         def recall(self, query, limit=8):
-            raise OSError("mem0 unreachable")
+            raise OSError("memory store unreachable")
 
     provider = ScriptedProvider([text_response("hello")])
     agent = build_agent(config, provider, memory=Down(config.memories_dir))
