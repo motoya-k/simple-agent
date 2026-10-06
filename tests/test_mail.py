@@ -150,8 +150,10 @@ def make_host(config, provider, router, **kwargs):
 
     built = []
 
-    def factory(cfg, *, session_key, source, tools):
-        agent = Agent(cfg, source=source, session_key=session_key, tools=tools, provider=provider)
+    def factory(cfg, *, session_key, source, profile):
+        agent = Agent(
+            cfg, source=source, session_key=session_key, profile=profile, provider=provider
+        )
         built.append(agent)
         return agent
 
@@ -160,6 +162,7 @@ def make_host(config, provider, router, **kwargs):
 
 
 def test_untrusted_route_gets_narrow_tools_and_does_not_learn(config):
+    """Both halves come from the one profile the route names."""
     provider = Scripted()
     host, built = make_host(config, provider, AllowlistRouter(allow=("@example.com",)))
 
@@ -167,7 +170,8 @@ def test_untrusted_route_gets_narrow_tools_and_does_not_learn(config):
 
     assert text == "done"
     assert provider.tools_seen == [["skill_view"]]  # no terminal, files, or memory
-    assert built[0].config.learning is False
+    assert built[0].profile.name == "email"
+    assert built[0].learning is False
     assert config.learning is True  # the host's own config is untouched
 
 

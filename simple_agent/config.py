@@ -34,14 +34,8 @@ KEYS = (
     "review_model",
     "learning",
     "database_url",
-    "memory_backend",
-    "skill_backend",
     "memory_namespace",
-    "imap_host",
-    "imap_user",
-    "imap_mailbox",
-    "email_allow",
-    "email_tools",
+    "profile",
     "max_concurrent_turns",
     "disabled_tools",
 )
@@ -56,27 +50,18 @@ class Config:
     # Jev yes/no probability below which a review pass is skipped. Only used
     # when TYPESAFE_API_KEY is set. See review_gate.py.
     review_gate_threshold: float = 0.15
-    # Empty = SQLite at state_db. A postgresql:// URL moves the transcript
-    # store to Postgres; see state_postgres.py for when that is worth it.
+    # Everything this agent writes — transcripts, long-term memory, skills —
+    # goes to one place. Empty keeps it in files under `home`: SQLite for
+    # transcripts, JSONL for memory, directories for skills, all editable by
+    # hand. A postgresql:// URL moves all three to Postgres, for a host whose
+    # disk does not outlive it. See state_postgres.py, memory.py, skills.py.
     database_url: str = ""
-    # Long-term memory: the team's shared knowledge. local | mem0 | hindsight.
-    # The namespace is the team or org it belongs to — mem0's app_id,
-    # Hindsight's bank. See memory.py.
-    memory_backend: str = "local"  # local | postgres | mem0 | hindsight
-    # Where skills are kept: "files" (skills_dir) or "postgres" (database_url).
-    skill_backend: str = "files"
+    # The team or org long-term memory belongs to. A profile may name its own.
     memory_namespace: str = "default"
-    # How many conversations a message host keeps live at once, and how long an
-    # idle one stays resident. See registry.AgentRegistry.
-    # The email host (`simple-agent --email`). The password is read from
-    # SIMPLE_AGENT_IMAP_PASSWORD only, never from config.yaml. email_allow is
-    # comma-separated addresses or @domains; email_tools is the comma-separated
-    # toolset for mail, read-only by default. See host.py for why.
-    imap_host: str = ""
-    imap_user: str = ""
-    imap_mailbox: str = "INBOX"
-    email_allow: str = ""
-    email_tools: str = "skill_view"
+    # Who the agent is: its instructions, toolset, whether it may learn, and
+    # its memory namespace. A name in `profiles_dir`, or one of the built-ins
+    # (`terminal`, `email`). See profile.py.
+    profile: str = ""
     # Messages a host works on at once (one conversation still runs in order).
     max_concurrent_turns: int = 4
     # Tools removed everywhere, comma-separated, patterns allowed. The
@@ -100,6 +85,10 @@ class Config:
         return self.home / "skills"
 
     @property
+    def profiles_dir(self) -> Path:
+        return self.home / "profiles"
+
+    @property
     def state_db(self) -> Path:
         return self.home / "state.db"
 
@@ -120,7 +109,13 @@ class Config:
             values["learning"] = values["learning"].lower() not in {"0", "false", "no", "off"}
 
         cfg = cls(home=HOME, **values)
-        for directory in (cfg.home, cfg.memories_dir, cfg.skills_dir, cfg.shell_state_dir):
+        for directory in (
+            cfg.home,
+            cfg.memories_dir,
+            cfg.skills_dir,
+            cfg.profiles_dir,
+            cfg.shell_state_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         return cfg
 

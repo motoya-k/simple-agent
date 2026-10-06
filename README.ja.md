@@ -14,10 +14,10 @@
 | ---------------- | ------------ | ------------ | ------------ |
 | 言語             | Python       | Python       | TypeScript   |
 | 実行時の依存     | **0**        | 45           | 66           |
-| コード行数¹      | **約 5.3k**  | 約 887k      | 約 4.4M      |
+| コード行数¹      | **約 6.2k**  | 約 887k      | 約 4.4M      |
 | ライセンス       | MIT          | MIT          | MIT          |
 
-¹ テストを除いたソースの行数。2026-09-29 に各リポジトリのデフォルトブランチで計測しました。
+¹ テストを除いたソースの行数。simple-agent は 2026-10-06、他の 2 つは 2026-09-29 に、それぞれのデフォルトブランチで計測しました。
 
 Hermes と OpenClaw は完成された製品で、多数のチャットプラットフォーム、アプリ、サンドボックスなど、最初からできることは圧倒的に多いです。simple-agent が向いているのは、エージェント全体を半日で読み切り、部品を自分で入れ替えたい場合です。
 
@@ -39,13 +39,53 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 | 層 | 選択肢 | 設定 |
 | --- | --- | --- |
 | モデル | `anthropic`、`bedrock`（Converse。Bedrock API キーか、`AWS_PROFILE` の IAM 認証）、`gemini`、`openai`（Responses） | `SIMPLE_AGENT_PROVIDER`、`SIMPLE_AGENT_MODEL` |
+| エージェントの人格 | プロファイル（指示文・使えるツール・学習の有無・記憶の namespace） | `SIMPLE_AGENT_PROFILE`、`~/.simple-agent/profiles/<名前>.md` |
 | 入力と出力 | `Source` → `Router` → `Sink`。IMAP メールの Source を同梱（ターミナルの REPL は別のホスト） | コード：`simple_agent/seams.py` |
-| 記憶 | `local`、`mem0`、`hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
-| 会話履歴 | SQLite（既定）、Postgres | `SIMPLE_AGENT_DATABASE_URL` |
+| ツール | stdio で動く MCP サーバー（組み込みのツールに加わる） | `~/.simple-agent/mcp.json` |
+| 保存先 | `~/.simple-agent` の下のファイル（既定）か Postgres。会話履歴・記憶・スキルがまとめて動く | `SIMPLE_AGENT_DATABASE_URL` |
 
 設定は環境変数か `~/.simple-agent/config.yaml`（同じキーを小文字で）に書きます。両方にある場合は環境変数が優先されます。設定項目の一覧は `.env.example` にあります。
 
 プロバイダを足すときは、ファイルを 1 つ追加し、登録表に 1 行書くだけです。ループには手を入れません。
+
+### 書き込むものは 1 か所にまとめる
+
+ターンをまたいで残るものは 3 つあります。会話履歴、長期記憶（チームが知っていること）、スキル（エージェントが自分で書いた手順）です。この 3 つは 1 つの設定で一緒に動くので、「半分だけ移した」状態になりません。
+
+- **未設定** — `~/.simple-agent` の下のファイルに置きます。会話履歴は SQLite、記憶は namespace ごとの JSONL 1 ファイル、スキルは 1 つにつき 1 ディレクトリです。どれもエディタで開いて直せます。
+- **`SIMPLE_AGENT_DATABASE_URL=postgresql://...`** — 3 つとも Postgres に置きます。ディスクが残らないコンテナ向けです（`pip install ".[postgres]"`）。
+
+`SIMPLE_AGENT_MEMORY_NAMESPACE` は、その記憶と会話が属するチームです。1 つのデプロイを 2 チームで使っても、記憶も会話も混ざりません。
+
+mem0 や Hindsight のような外部の記憶サービスは、ここでは保存先の選択肢ではありません。MCP サーバーとしてつなぎます（後述）。1 か所に書けばどのハーネスからも届くので、サービスごとのアダプタをこのリポジトリが抱えずに済みます。
+
+## プロファイル：そのルートでのエージェントの人格
+
+同じコアが、ターミナルの前にいる人にも、受信箱にメールを送ってきた知らない相手にも応えます。ただし応え方を同じにしてはいけません。プロファイルは、その違いを 1 つのファイルにまとめたものです。システムプロンプトに入る指示文、使えるツール、長期記憶とスキルに書き込んでよいか、どのチームの記憶を読むか——この 4 つです。
+
+組み込みは 2 つあります。`terminal` はすべてのツールを使い、学習もします。`email` は読み取り専用のツールだけで、何も学習しません。誰でも書き込める受信箱が、信頼している会話に何かを教えられてはならないからです。この 2 つは同じファイルの隣り合う行なので、片方だけ緩むことがありません。
+
+組み込みを上書きしたり、新しく足したりするには、ファイルを 1 つ書きます。形式はスキルと同じです。
+
+```markdown
+---
+tools: skill_view, google__*_list
+learning: false
+namespace: support
+imap_host: imap.gmail.com
+imap_user: support@example.com
+email_allow: "@example.com"
+---
+
+あなたはサポートのメールに対応します。答える前に必ず調べること。返金を約束しないこと。
+```
+
+```bash
+simple-agent --profile support            # ターミナルで使う
+simple-agent --email --profile support    # メールのホストとして動かす
+```
+
+`tools: '*'` と書くとすべてのツールを使えます。環境変数のほうが優先されるので、コンテナではファイルを置かずに設定できます。4 つの項目は `SIMPLE_AGENT_SUPPORT_TOOLS`、`_LEARNING`、`_NAMESPACE`、その他の設定は `SIMPLE_AGENT_IMAP_HOST`、`SIMPLE_AGENT_EMAIL_ALLOW` です。パスワードは環境変数からしか読みません。ファイルには書かないので、プロファイルはリポジトリに入れても安全です。
 
 ## ほかのハーネスから使う
 
@@ -54,6 +94,8 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 ```json
 {"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}
 ```
+
+`--profile` を渡すと、プロファイル 1 つぶんの権限（ツールと記憶の namespace）をそのハーネスに貸せます。`--tools` はそこからさらに絞るだけで、広げることはできません。
 
 PM 向け、営業向け、マーケ向けのエージェントは、同じループに別のツール（MCP サーバー）とスキルを渡したものです。
 
@@ -73,6 +115,8 @@ SIMPLE_AGENT_EMAIL_TOOLS='skill_view,google__*_list,google__*_get' simple-agent 
 
 対応しているのは標準入出力（stdio）で動くサーバーだけです。起動できなかったサーバーはログに記録して飛ばします。
 
+外部の記憶サービスもここにつなぎます。mem0 や Hindsight は MCP サーバーを公開しているので、ここに 1 行足せば、組み込みのツールと並んでエージェントから使えます。サービスごとのアダプタをこのリポジトリが持つ必要はありません。
+
 ## メール
 
 ```bash
@@ -85,7 +129,7 @@ simple-agent --email
 
 メールボックスをポーリングし、差出人とスレッドの組ごとに 1 つの会話として処理します。返信はしません。エージェントが何かをするときは、ツールを通して行います。メールボックスは一切変更しません（読み取り専用で開き、`BODY.PEEK` で取得します）。処理済みのメールはエージェント自身のデータベースに記録します。起動した時点ですでに届いていたメールは処理しません。
 
-**メールは信頼できない入力です。** 受信箱には誰でもメールを送れますし、差出人アドレスは簡単に偽装できます。そのため、差出人の許可リストはコストを抑える役にしか立ちません。本当の防御線はツールの制限です。メールから動く会話は、既定では読み取り専用のツールだけを使い（`SIMPLE_AGENT_EMAIL_TOOLS`）、会話後のバックグラウンドレビューも実行しません。こうすることで、メールの内容が記憶やスキルに書き込まれ、信頼しているほかのセッションに読み込まれることを防ぎます。ツールを広げる場合は、このリスクを理解したうえで行ってください。
+**メールは信頼できない入力です。** 受信箱には誰でもメールを送れますし、差出人アドレスは簡単に偽装できます。そのため、差出人の許可リストはコストを抑える役にしか立ちません。本当の防御線は `email` プロファイルです。読み取り専用のツールだけを使い、`learning: false` なので、メールの内容が記憶やスキルに書き込まれ、信頼しているほかのセッションに読み込まれることがありません。広げる場合は、この 2 つが同じファイルの隣り合う行であることを踏まえて、両方を意識したうえで行ってください。
 
 ## デプロイ（AWS ECS Fargate）
 
@@ -95,11 +139,12 @@ simple-agent --email
 FROM ghcr.io/you/simple-agent:latest          # この repo の Dockerfile からビルドしたもの
 RUN pip install --user workspace-mcp==1.30.0  # 動かすものはバージョンを固定する
 COPY --chown=agent:agent mcp.json /home/agent/.simple-agent/mcp.json
+COPY --chown=agent:agent support.md /home/agent/.simple-agent/profiles/support.md
 ```
 
 タスクは 1 つで、次のように設定します。
 
-- **状態は Postgres（RDS / Aurora）に置き**、コンテナには何も残しません。設定は `SIMPLE_AGENT_DATABASE_URL`、`SIMPLE_AGENT_MEMORY_BACKEND=postgres`、`SIMPLE_AGENT_SKILL_BACKEND=postgres` です。
+- **状態は Postgres（RDS / Aurora）に置き**、コンテナには何も残しません。`SIMPLE_AGENT_DATABASE_URL` を 1 つ設定すれば、会話履歴・記憶・スキルがまとめて移ります。
 - **タスクロール**に、推論プロファイルと、その振り分け先のモデルに対する `bedrock:InvokeModel` を付けます。認証情報はロールから取得して自動で更新するので、タスクにキーを置く必要はありません。
 - **秘密情報は Secrets Manager から環境変数として渡します**（`SIMPLE_AGENT_IMAP_PASSWORD`、データベースの URL、MCP サーバー用のキー）。MCP サーバーは環境変数を引き継ぎます。
 - `stopTimeout: 120`（SIGTERM を受けてから、処理中の会話に 90 秒の猶予を与えるため）、`initProcessEnabled: true`（終了した MCP サーバーのプロセスを回収するため）、`desiredCount: 1` にします。

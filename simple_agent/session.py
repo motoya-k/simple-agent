@@ -13,8 +13,9 @@ The rules, and the reason each one is the way it is:
   is talking to one agent, which is how a human reads a thread.
 * **Non-thread group messages are isolated per participant.**  Two people
   chatting in the same busy channel are not having one conversation.
-* **Every key is namespaced** by profile and platform, so ids minted by
-  different services can never collide.
+* **Every key is namespaced** by the profile's namespace and the platform, so
+  ids minted by different services can never collide, and two teams sharing a
+  deployment share neither their conversations nor their memory.
 
 Ported from Hermes ``gateway/session.py``.  The shape is the same; the types
 are simplified (plain strings instead of enums) so a host can name a platform
@@ -56,7 +57,7 @@ class SessionSource:
     chat_name: str = ""
     thread_id: str = ""
     message_id: str = ""
-    profile: str = ""  # "" means DEFAULT_PROFILE
+    profile: str = ""  # the profile's namespace; "" means DEFAULT_PROFILE
 
     @property
     def is_dm(self) -> bool:
@@ -114,11 +115,12 @@ class SessionSource:
 
 
 def _namespace(profile: str | None) -> str:
-    """The first slot of the key.
+    """The first slot of the key: the namespace a profile works in.
 
-    Kept as a separate slot so two profiles serving the same platform and chat
-    never collide, and so every key has the same positional layout whether or
-    not profiles are in use.
+    The same value long-term memory uses (see
+    :attr:`simple_agent.profile.Profile.namespace`), so one namespace means one
+    team's conversations *and* one team's knowledge. Kept as its own slot so
+    every key has the same positional layout whether or not it is set.
     """
     if not profile or profile == "default":
         return DEFAULT_PROFILE

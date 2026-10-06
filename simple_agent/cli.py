@@ -7,6 +7,7 @@ import sys
 
 from .agent import Agent
 from .config import Config, load_dotenv
+from .profile import load_profile
 from .session import SessionSource
 
 DIM = "\033[2m"
@@ -71,7 +72,10 @@ def _handle_command(agent: Agent, line: str) -> Agent | bool:
         )
         print(f"  {len(agent.messages)} messages in context")
     elif command == "new":
-        fresh = Agent(agent.config, cwd=agent.cwd, source=agent.source, resume=False)
+        fresh = Agent(
+            agent.config, cwd=agent.cwd, source=agent.source, resume=False,
+            profile=agent.profile,
+        )
         print(f"{DIM}started session {fresh.session_id}{RESET}")
         return fresh
     else:
@@ -97,42 +101,59 @@ def health(config: Config) -> int:
     return 0
 
 
-def serve_email(config: Config) -> int:
-    """Poll a mailbox and run one agent per sender and thread. Answers nobody."""
+def serve_email(config: Config, profile_name: str = "") -> int:
+    """Poll a mailbox and run one agent per sender and thread. Answers nobody.
+
+    The mailbox, the allowlist, the toolset and the instructions all come from
+    the profile — ``email`` unless another is named. The password does not: a
+    secret is read from the environment only, so a profile file stays safe to
+    commit.
+    """
     import asyncio
 
     from .host import AllowlistRouter, Host
     from .mail import ImapSource, open_ledger
 
+    profile = load_profile(config, profile_name or "email")
     password = os.environ.get("SIMPLE_AGENT_IMAP_PASSWORD", "")
-    allow = tuple(a.strip() for a in config.email_allow.split(",") if a.strip())
+    host_name = profile.setting("imap_host")
+    user = profile.setting("imap_user")
+    mailbox = profile.setting("imap_mailbox", "INBOX")
+    allow = profile.setting_list("email_allow")
     missing = [
         name
         for name, value in (
-            ("imap_host", config.imap_host),
-            ("imap_user", config.imap_user),
+            ("imap_host", host_name),
+            ("imap_user", user),
             ("SIMPLE_AGENT_IMAP_PASSWORD", password),
             ("email_allow", allow),
         )
         if not value
     ]
     if missing:
-        print(f"--email needs: {', '.join(missing)}", file=sys.stderr)
+        print(
+            f"--email needs: {', '.join(missing)} "
+            f"(in {config.profiles_dir / f'{profile.name}.md'} or the environment)",
+            file=sys.stderr,
+        )
         return 1
 
     from .logs import configure
 
     configure()
-    tools = tuple(t.strip() for t in config.email_tools.split(",") if t.strip())
     source = ImapSource(
-        host=config.imap_host,
-        user=config.imap_user,
+        host=host_name,
+        user=user,
         password=password,
-        mailbox=config.imap_mailbox,
+        mailbox=mailbox,
         ledger=open_ledger(config),
     )
-    host = Host(config, sources=[source], router=AllowlistRouter(allow=allow, tools=tools))
-    print(f"{DIM}watching {config.imap_user} {config.imap_mailbox} · tools: {', '.join(tools) or 'none'}{RESET}")
+    host = Host(config, sources=[source], router=AllowlistRouter(allow=allow, profile=profile))
+    tools = "*" if profile.tools is None else ", ".join(profile.tools) or "none"
+    print(
+        f"{DIM}watching {user} {mailbox} · profile {profile.name} "
+        f"· tools: {tools}{RESET}"
+    )
     try:
         asyncio.run(host.serve())
     except KeyboardInterrupt:
@@ -140,23 +161,38 @@ def serve_email(config: Config) -> int:
     return 0
 
 
+def _take_profile(argv: list[str]) -> str:
+    """Pull ``--profile NAME`` out of the arguments, wherever it appears."""
+    if "--profile" not in argv:
+        return ""
+    index = argv.index("--profile")
+    name = argv[index + 1] if len(argv) > index + 1 else ""
+    del argv[index : index + 2]
+    return name
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     argv = list(sys.argv[1:] if argv is None else argv)
 
     config = Config.load()
-    if argv[:1] == ["--email"]:
-        return serve_email(config)
-    if argv[:1] == ["--health"]:
-        return health(config)
     if argv[:1] == ["--mcp"]:
         from . import mcp
 
         return mcp.main(argv[1:], config)
+    profile_name = _take_profile(argv)
+    if argv[:1] == ["--email"]:
+        return serve_email(config, profile_name)
+    if argv[:1] == ["--health"]:
+        return health(config)
     try:
         # One conversation per working directory, resumed on the next launch.
-        agent = Agent(config, source=SessionSource.local(os.getcwd()))
-    except RuntimeError as exc:
+        agent = Agent(
+            config,
+            source=SessionSource.local(os.getcwd()),
+            profile=load_profile(config, profile_name),
+        )
+    except (RuntimeError, ValueError) as exc:
         print(f"{exc}", file=sys.stderr)
         return 1
 
@@ -174,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     resumed = f" · resumed {len(agent.messages)} messages" if agent.messages else ""
     print(
         f"{BOLD}simple-agent{RESET} {DIM}· {agent.config.model} "
-        f"· session {agent.session_id}{resumed}{RESET}"
+        f"· profile {agent.profile.name} · session {agent.session_id}{resumed}{RESET}"
     )
     print(f"{DIM}/help for commands, /exit to quit{RESET}\n")
 

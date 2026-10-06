@@ -32,20 +32,23 @@ every request.  Attached to the new message, it is part of the conversation
 from then on — long-term knowledge becomes short-term exactly once, at the
 moment it is needed, and is not injected again.
 
-Three backends implement :class:`LongTermMemory`: :class:`LocalMemory` (a
-JSONL file, keyword recall, no dependencies — the default and what tests
-use), :class:`Mem0Memory` and :class:`HindsightMemory`.  The last two call
-their HTTP APIs with the standard library, so the repo stays dependency-free.
+Where it is kept follows one setting, ``database_url``, the same one the
+transcripts follow: empty means :class:`LocalMemory`, a JSONL file in
+``~/.simple-agent`` you can open in an editor; a ``postgresql://`` URL means
+:class:`PostgresMemory`.  Nothing else to choose, and recall behaves the same
+either way.
+
+A hosted memory service (mem0, Hindsight, a vector store of your own) is not a
+backend here.  It is an MCP server in ``~/.simple-agent/mcp.json``, so it is
+declared once and reaches every harness — see :mod:`simple_agent.mcp_client`.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
-import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,101 +148,6 @@ def _bigrams(text: str) -> set[str]:
     return {text[i : i + 2] for i in range(len(text) - 1) if " " not in text[i : i + 2]}
 
 
-# -- hosted ---------------------------------------------------------------
-def _post_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout: int) -> Any:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", **headers},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read() or b"{}")
-
-
-class Mem0Memory:
-    """mem0's hosted API. The namespace is mem0's ``app_id``: shared by the
-    team, not tied to one ``user_id``.  mem0 extracts and de-duplicates facts
-    itself, so ``retain`` hands it the raw statement.
-
-    https://docs.mem0.ai/api-reference/memory/add-memories
-    """
-
-    def __init__(
-        self, api_key: str, namespace: str = "default", *, base_url: str = "", timeout: int = 10
-    ) -> None:
-        self.namespace = namespace
-        self.api_key = api_key
-        self.base_url = (base_url or os.environ.get("MEM0_API_URL") or "https://api.mem0.ai").rstrip("/")
-        self.timeout = timeout
-
-    def _post(self, path: str, body: dict[str, Any]) -> Any:
-        headers = {"Authorization": f"Token {self.api_key}"}
-        return _post_json(f"{self.base_url}{path}", body, headers, self.timeout)
-
-    def recall(self, query: str, limit: int = 8) -> list[Memory]:
-        data = self._post(
-            "/v3/memories/search/",
-            {"query": query, "filters": {"app_id": self.namespace}, "top_k": limit},
-        )
-        return [
-            Memory(str(r.get("id", "")), r["memory"], float(r.get("score") or 0))
-            for r in data.get("results", [])
-            if r.get("memory")
-        ]
-
-    def retain(self, content: str, *, context: str = "") -> str:
-        data = self._post(
-            "/v3/memories/add/",
-            {
-                "messages": [{"role": "user", "content": content}],
-                "app_id": self.namespace,
-                "metadata": {"context": context} if context else {},
-            },
-        )
-        return f"Sent to mem0 ({self.namespace}): {data.get('status', 'ok')}."
-
-
-class HindsightMemory:
-    """A Hindsight server. The namespace is the memory *bank*.
-
-    https://hindsight.vectorize.io/api-reference
-    """
-
-    def __init__(
-        self,
-        namespace: str = "default",
-        *,
-        base_url: str = "",
-        api_key: str = "",
-        timeout: int = 30,
-    ) -> None:
-        self.namespace = namespace
-        base = base_url or os.environ.get("HINDSIGHT_API_URL") or "http://localhost:8888"
-        self.bank_url = f"{base.rstrip('/')}/v1/default/banks/{namespace}/memories"
-        self.api_key = api_key or os.environ.get("HINDSIGHT_API_KEY", "")
-        self.timeout = timeout
-
-    def _post(self, url: str, body: dict[str, Any]) -> Any:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        return _post_json(url, body, headers, self.timeout)
-
-    def recall(self, query: str, limit: int = 8) -> list[Memory]:
-        data = self._post(f"{self.bank_url}/recall", {"query": query, "budget": "low"})
-        return [
-            Memory(str(r.get("id", "")), r["text"])
-            for r in data.get("results", [])[:limit]
-            if r.get("text")
-        ]
-
-    def retain(self, content: str, *, context: str = "") -> str:
-        item: dict[str, Any] = {"content": content}
-        if context:
-            item["context"] = context
-        self._post(self.bank_url, {"items": [item]})
-        return f"Retained in Hindsight bank {self.namespace!r}."
-
-
 class PostgresMemory:
     """:class:`LocalMemory` on a table, for hosts that keep nothing on disk.
 
@@ -302,33 +210,23 @@ class PostgresMemory:
         return f"Saved to long-term memory ({self.namespace})."
 
 
-def open_memory(config: Any) -> LongTermMemory:
-    """The long-term memory ``config.memory_backend`` names."""
-    backend = config.memory_backend
-    namespace = config.memory_namespace
-    if backend == "local":
-        return LocalMemory(config.memories_dir, namespace)
-    if backend == "postgres":
-        if not config.database_url:
-            raise ValueError("memory_backend=postgres needs database_url")
+def open_memory(config: Any, namespace: str = "") -> LongTermMemory:
+    """Long-term memory where ``config.database_url`` says, in ``namespace``.
+
+    The namespace is the team this knowledge belongs to; a profile may name its
+    own, so one deployment can keep an inbox's memory apart from a person's.
+    """
+    namespace = namespace or config.memory_namespace
+    if config.database_url:
         return PostgresMemory(config.database_url, namespace)
-    if backend == "mem0":
-        key = os.environ.get("MEM0_API_KEY", "")
-        if not key:
-            raise ValueError("memory_backend=mem0 needs MEM0_API_KEY")
-        return Mem0Memory(key, namespace)
-    if backend == "hindsight":
-        return HindsightMemory(namespace)
-    raise ValueError(f"Unknown memory_backend: {backend!r} (local | postgres | mem0 | hindsight)")
+    return LocalMemory(config.memories_dir, namespace)
 
 
 __all__ = [
-    "HindsightMemory",
-    "PostgresMemory",
     "LocalMemory",
     "LongTermMemory",
-    "Mem0Memory",
     "Memory",
+    "PostgresMemory",
     "format_recall",
     "open_memory",
 ]

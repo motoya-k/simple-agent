@@ -5,7 +5,9 @@ memory, skills, and session search: register this server in that harness and
 its model reads and writes the *same* memory as ours, whichever backend is
 configured.  The harness owns its loop; we own what the loop can touch.
 
-``--tools`` is an allowlist, so a harness can be given a narrowed toolset.
+``--profile`` lends that harness one of our profiles — its toolset and its
+memory namespace — and ``--tools`` narrows whatever is left, so a harness can
+be handed strictly less than the profile allows but never more.
 
 Newline-delimited JSON-RPC 2.0, the MCP stdio transport.  Only what a tool
 server needs: ``initialize``, ``tools/list``, ``tools/call``, ``ping``.
@@ -25,16 +27,29 @@ PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "simple-agent", "version": "0.2.0"}
 
 
-def build_tool_registry(config: Any, tools: list[str] | None) -> ToolRegistry:
-    """The same toolset an Agent would get, narrowed to ``tools``."""
+def build_tool_registry(
+    config: Any, tools: list[str] | None, profile_name: str = ""
+) -> ToolRegistry:
+    """The toolset an Agent on this profile would get, narrowed to ``tools``.
+
+    Both narrowings apply, in that order: a profile that withholds the
+    terminal cannot have it handed back by ``--tools``.
+    """
     from .memory import open_memory
+    from .profile import load_profile
     from .skills import open_skills
     from .state import open_store
     from .tools import build_registry
 
+    profile = load_profile(config, profile_name)
     registry = build_registry(
-        config, open_memory(config), open_skills(config), open_store(config)
+        config,
+        open_memory(config, profile.namespace),
+        open_skills(config),
+        open_store(config),
     )
+    if profile.tools is not None:
+        registry = registry.subset(list(profile.tools))
     return registry if tools is None else registry.subset(tools)
 
 
@@ -100,6 +115,7 @@ def serve(
 
 def main(argv: list[str], config: Any) -> int:
     tools: list[str] | None = None
+    profile_name = ""
     # Also from the environment, for harnesses that take an MCP server as one
     # command string, where a key with spaces in it would not survive.
     session_key = os.environ.get("SIMPLE_AGENT_MCP_SESSION_KEY", "")
@@ -107,10 +123,17 @@ def main(argv: list[str], config: Any) -> int:
     for arg in args:
         if arg == "--tools":
             tools = [t for t in next(args, "").split(",") if t]
+        elif arg == "--profile":
+            profile_name = next(args, "")
         elif arg == "--session-key":
             session_key = next(args, "")
         else:
             print(f"unknown argument: {arg}", file=sys.stderr)
             return 2
-    serve(build_tool_registry(config, tools), session_key=session_key)
+    try:
+        registry = build_tool_registry(config, tools, profile_name)
+    except ValueError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
+    serve(registry, session_key=session_key)
     return 0

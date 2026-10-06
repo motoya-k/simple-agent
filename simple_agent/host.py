@@ -7,12 +7,13 @@ platform knowledge: that lives in the Sources and Sinks it is handed.
 Three rules it enforces, because each is easy to get wrong in a platform
 adapter and expensive when it is:
 
-* **A narrowed route is an untrusted route.**  Long-term memory and skills are
-  shared by every conversation.  A route that had to take the terminal away
-  (an inbox anyone can write to) must also not be able to *teach* the trusted
-  ones, so its conversations run without the background review, and it should
-  only be given read-only tools.  Without ``memory_search`` it is not handed
-  the team's long-term memory either.
+* **A route runs under a profile, and the profile says how far it reaches.**
+  Long-term memory and skills are shared by every conversation, so a route
+  that had to take the terminal away (an inbox anyone can write to) must not
+  be able to *teach* the trusted ones either.  The ``email`` profile says both
+  at once — read-only tools, ``learning: false`` — and the host just obeys it;
+  see :mod:`simple_agent.profile`.  Without ``memory_search`` such a route is
+  not handed the team's long-term memory either.
 * **A message is acknowledged once, after the turn** — successfully or not.
   A crash mid-turn leaves it unacknowledged, so it is replayed on restart;
   a message that makes the agent fail every time is not retried forever.
@@ -39,19 +40,15 @@ import json
 import logging
 import signal
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .profile import BUILT_IN, Profile, load_profile
 from .registry import AgentRegistry
 from .seams import Destination, InboundMessage, Route, Router, Sink, Source
 
 log = logging.getLogger(__name__)
-
-# What an untrusted route may use: look things up, never write anything that
-# another conversation will read. Skills qualify because they are abstract;
-# long-term memory does not, because it is the team's own knowledge.
-READ_ONLY_TOOLS = ("skill_view",)
 
 # ECS gives a task 30s by default and at most 120s between SIGTERM and SIGKILL;
 # set the task's stopTimeout above this.
@@ -70,7 +67,7 @@ class AllowlistRouter(Router):
     """
 
     allow: tuple[str, ...]
-    tools: tuple[str, ...] | None = READ_ONLY_TOOLS
+    profile: Profile = BUILT_IN["email"]
     to: tuple[Destination, ...] = ()
 
     def route(self, message: InboundMessage) -> Route | None:
@@ -78,7 +75,7 @@ class AllowlistRouter(Router):
         for entry in self.allow:
             entry = entry.lower().strip()
             if entry and (sender == entry or (entry.startswith("@") and sender.endswith(entry))):
-                return Route(to=self.to, tools=self.tools)
+                return Route(to=self.to, profile=self.profile)
         return None
 
 
@@ -119,7 +116,9 @@ class Host:
         self.sinks = {sink.platform: sink for sink in sinks}
         self.dead_letters = dead_letters or DeadLetters(config.home / "dead_letters.jsonl")
         self._factory = agent_factory or self._default_factory
-        self._routes: dict[str, Route] = {}
+        # The profile each live conversation was built under, so the agent
+        # the registry asks for is built with the one its route resolved to.
+        self._profiles: dict[str, Profile] = {}
         self.agents = AgentRegistry(
             self._build, max_agents=config.max_agents, idle_seconds=config.agent_idle_seconds
         )
@@ -132,19 +131,20 @@ class Host:
 
     # -- agents ---------------------------------------------------------
     def _build(self, session_key: str, source):
-        route = self._routes[session_key]
-        config = self.config
-        if route.tools is not None:
-            config = replace(config, learning=False)  # untrusted: see module doc
-        return self._factory(config, session_key=session_key, source=source, tools=route.tools)
+        profile = self._profiles[session_key]
+        return self._factory(
+            self.config, session_key=session_key, source=source, profile=profile
+        )
 
-    def _default_factory(self, config, *, session_key, source, tools):
+    def _default_factory(self, config, *, session_key, source, profile):
         from .agent import Agent
         from .state import open_store
 
         if not hasattr(self, "_store"):
             self._store = open_store(config)  # one connection for all agents
-        return Agent(config, source=source, session_key=session_key, tools=tools, store=self._store)
+        return Agent(
+            config, source=source, session_key=session_key, profile=profile, store=self._store
+        )
 
     # -- running --------------------------------------------------------
     async def serve(self) -> None:
@@ -226,9 +226,13 @@ class Host:
             log.info("dropped %s from %s (no route)", message.message_id, message.user_id)
             return None
 
-        key = message.session_key()
-        self._routes[key] = route
-        signature = "tools=" + (",".join(route.tools) if route.tools is not None else "*")
+        profile = route.profile or load_profile(self.config)
+        key = message.session_key(profile=profile.namespace or self.config.memory_namespace)
+        self._profiles[key] = profile
+        # A conversation whose profile changed must not keep the agent built
+        # under the old one: that is how a widened toolset would leak backwards.
+        # The name is not enough — an edited profile keeps its name.
+        signature = f"{profile.name}:{profile.tools}:{profile.learning}:{profile.namespace}"
         agent = self.agents.get(key, message.source(), signature=signature)
 
         for to in route.to:

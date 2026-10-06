@@ -29,9 +29,11 @@ Only the frontmatter (name + description) is resident in the system prompt; the
 body is loaded on demand by ``skill_view``.  That keeps an ever-growing library
 from eating the context window — a hundred skills cost a few hundred tokens.
 
-Where the ``SKILL.md`` text lives is a :class:`SkillStore`: a directory by
-default, or a Postgres table (``skill_backend: postgres``) for a container
-whose disk does not outlive it.  Everything above the store is the same.
+Where the ``SKILL.md`` text lives follows the same single setting as the
+transcripts and long-term memory, ``database_url``: empty means a directory
+under ``~/.simple-agent/skills`` you can edit and diff by hand, a
+``postgresql://`` URL means a table, for a container whose disk does not
+outlive it.  Everything above the store is the same.
 
 The **curator** ages skills instead of deleting them: ``active`` → ``stale``
 (30 days unused) → ``archived`` (90 days).  Archived skills drop out of the
@@ -149,10 +151,8 @@ class PostgresSkillStore:
 
 
 def open_skills(config: Any) -> "SkillLibrary":
-    """The skill library ``config.skill_backend`` names (files unless "postgres")."""
-    if getattr(config, "skill_backend", "files") == "postgres":
-        if not config.database_url:
-            raise ValueError("skill_backend=postgres needs database_url")
+    """The skill library where ``config.database_url`` says."""
+    if config.database_url:
         return SkillLibrary(PostgresSkillStore(config.database_url))
     return SkillLibrary(config.skills_dir)
 
@@ -161,7 +161,7 @@ class Skill:
     def __init__(self, name: str, text: str, store: SkillStore) -> None:
         self.name = name
         self.store = store
-        self.meta, self.body = _parse(text)
+        self.meta, self.body = parse_frontmatter(text)
 
     @property
     def path(self) -> Path | None:
@@ -275,7 +275,8 @@ class SkillLibrary:
         return "\n".join(f"- {s.name}: {s.description}" for s in live)
 
 
-def _parse(text: str) -> tuple[dict[str, str], str]:
+def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """``---`` key/value header, then the body. Shared with profile.py."""
     if not text.startswith("---"):
         return {}, text
     _, _, rest = text.partition("---\n")

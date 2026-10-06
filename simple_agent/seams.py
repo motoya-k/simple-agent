@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
+from .profile import Profile
 from .session import SessionSource, build_session_key
 
 
@@ -141,13 +142,15 @@ class Route:
     """What the host does with one inbound message.
 
     ``to`` empty means receive and answer nobody — the agent still runs, and
-    anything it should do in the world it does through tools.  ``tools`` narrows
-    the toolset for messages on this route (``None`` keeps the default set);
-    it is how a route from an untrusted inbox runs without a terminal.
+    anything it should do in the world it does through tools.
+
+    ``profile`` is who the agent is on this route: its instructions, its
+    toolset, whether it may write long-term memory, and whose memory it reads.
+    ``None`` takes the host config's profile.  See :mod:`simple_agent.profile`.
     """
 
     to: tuple[Destination, ...] = ()
-    tools: tuple[str, ...] | None = None
+    profile: Profile | None = None
 
 
 class Router(ABC):
