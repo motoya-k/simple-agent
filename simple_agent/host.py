@@ -31,6 +31,13 @@ And three that make it safe to run unattended in a container:
   interrupted message was never acknowledged, so it is replayed on restart.
 * **A heartbeat file** is touched while the host is healthy, for a container
   health check (``simple-agent --health``).
+* **An answer nobody wants any more is not sent.**  Messages in one
+  conversation are answered in order, so "stop" arriving mid-turn would
+  normally be read *after* the answer it meant to stop had already been
+  posted.  So every message is asked about (``Router.stops``) the moment it
+  arrives, outside the lock, and an answer whose conversation was stopped is
+  dropped instead of delivered.  The turn itself still runs to the end — see
+  ``Agent.interrupt`` for stopping the work, which this does not do.
 """
 
 from __future__ import annotations
@@ -77,6 +84,36 @@ class AllowlistRouter(Router):
             if entry and (sender == entry or (entry.startswith("@") and sender.endswith(entry))):
                 return Route(to=self.to, profile=self.profile)
         return None
+
+
+@dataclass(frozen=True)
+class FirstMatch(Router):
+    """Ask each router in turn; the first one with a Route decides.
+
+    What a host with more than one transport needs: a Slack router knows
+    nothing about schedules and should not have to.  Order matters only when two
+    routers would claim the same message, which they should not — each one
+    checks the platform it is about.
+    """
+
+    routers: tuple[Router, ...] = ()
+
+    def route(self, message: InboundMessage) -> Route | None:
+        for router in self.routers:
+            route = router.route(message)
+            if route is not None:
+                return route
+        return None
+
+    def stops(self, message: InboundMessage) -> bool:
+        """Any of them recognizing a stop is a stop.
+
+        Unlike ``route`` there is nothing to decide between: a router that does
+        not answer this platform says no, and the one that does has the only
+        opinion.  Forwarded explicitly, because inheriting the default here
+        would quietly turn stopping off for every host with two transports.
+        """
+        return any(router.stops(message) for router in self.routers)
 
 
 class DeadLetters:
@@ -127,6 +164,11 @@ class Host:
         self._conversation_locks: dict[str, asyncio.Lock] = {}
         self._in_flight: set[asyncio.Task] = set()
         self._live: dict[str, object] = {}  # session key -> agent mid-turn
+        # Conversations with a turn in progress, and the ones told to stop
+        # while it was. Keyed like the turn lock, so both can be answered
+        # without routing the message first.
+        self._running: set[str] = set()
+        self._stops: set[str] = set()
         self._stopping = asyncio.Event()
 
     # -- agents ---------------------------------------------------------
@@ -180,6 +222,7 @@ class Host:
 
     async def _drain(self, source: Source) -> None:
         async for message in source.messages():
+            self._note_stop(message)
             await self._slots.acquire()
             if self._stopping.is_set():
                 self._slots.release()
@@ -188,11 +231,34 @@ class Host:
             self._in_flight.add(task)
             task.add_done_callback(self._in_flight.discard)
 
+    def _note_stop(self, message: InboundMessage) -> None:
+        """Remember that this conversation's answer is no longer wanted.
+
+        Only while a turn is actually in progress: a stop that arrives when
+        nothing is being answered belongs to nothing, and must not go on to
+        swallow the next answer instead.
+        """
+        if not self.router.stops(message):
+            return
+        key = message.session_key()
+        if key not in self._running:
+            log.info("stop from %s: nothing in flight to stop", message.user_id)
+            return
+        self._stops.add(key)
+        log.info("stop from %s: the answer being written will not be sent", message.user_id)
+
     async def _process(self, source: Source, message: InboundMessage) -> None:
-        lock = self._conversation_locks.setdefault(message.session_key(), asyncio.Lock())
+        key = message.session_key()
+        lock = self._conversation_locks.setdefault(key, asyncio.Lock())
         try:
             async with lock:
-                await self.handle(message)
+                self._running.add(key)
+                try:
+                    await self.handle(message)
+                finally:
+                    # A stop outlives the turn it was aimed at by nothing.
+                    self._running.discard(key)
+                    self._stops.discard(key)
         except asyncio.CancelledError:
             raise  # interrupted by shutdown: leave it unacknowledged
         except Exception:
@@ -257,9 +323,23 @@ class Host:
                 if sink is not None:
                     await sink.on_turn_end(message, to, ok)
 
-        if ok and text:
+        if ok and text and self._wanted(message):
             await self._deliver(message, route, text)
         return text if ok else None
+
+    def _wanted(self, message: InboundMessage) -> bool:
+        """False when this conversation said stop while the answer was being written.
+
+        Not a dead letter: an answer nobody wants is not an answer that could
+        not be delivered, and putting it where an operator looks for failures
+        would only hide the real ones.  It stays in the transcript, because the
+        turn did happen — the next turn can see what was written, even though
+        the channel never did.
+        """
+        if message.session_key() not in self._stops:
+            return True
+        log.info("answer to %s dropped: the conversation said stop", message.message_id)
+        return False
 
     async def _deliver(self, message: InboundMessage, route: Route, text: str) -> None:
         for to in route.to:

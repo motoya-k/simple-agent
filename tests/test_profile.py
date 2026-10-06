@@ -190,7 +190,7 @@ You answer support mail.
     routers = []
 
     class FakeHost:
-        def __init__(self, cfg, *, sources, router):
+        def __init__(self, cfg, *, sources, router, sinks=()):
             routers.append(router)
 
         async def serve(self):

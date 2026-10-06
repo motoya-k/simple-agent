@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
+from typing import Sequence
 
 from .agent import Agent
 from .config import Config, load_dotenv
@@ -101,17 +103,81 @@ def health(config: Config) -> int:
     return 0
 
 
-def serve_email(config: Config, profile_name: str = "") -> int:
-    """Poll a mailbox and run one agent per sender and thread. Answers nobody.
+SERVE_FLAGS = {"--email": "email", "--slack": "slack", "--cron": "cron"}
 
-    The mailbox, the allowlist, the toolset and the instructions all come from
-    the profile — ``email`` unless another is named. The password does not: a
-    secret is read from the environment only, so a profile file stays safe to
-    commit.
+
+def serve_email(config: Config, profile_name: str = "") -> int:
+    """Poll a mailbox and run one agent per sender and thread. Answers nobody."""
+    return serve(config, ("email",), profile_name)
+
+
+def serve(config: Config, kinds: Sequence[str], profile_name: str = "") -> int:
+    """One host, over the transports named in ``kinds``.
+
+    They compose on purpose: ``--slack --cron`` is one process, one agent
+    registry and one set of concurrency limits, with a schedule able to post its
+    answer into the same Slack the questions come from.
     """
     import asyncio
 
-    from .host import AllowlistRouter, Host
+    from .host import FirstMatch, Host
+    from .logs import configure
+
+    sources, sinks, routers, banners = [], [], [], []
+    for kind in dict.fromkeys(kinds):  # a flag given twice is one transport
+        parts = _BUILDERS[kind](config, profile_name)
+        if parts is None:
+            return 1  # the builder has said what is missing
+        sources += parts.sources
+        sinks += parts.sinks
+        routers.append(parts.router)
+        banners.append(parts.banner)
+
+    configure()
+    router = routers[0] if len(routers) == 1 else FirstMatch(tuple(routers))
+    host = Host(config, sources=sources, router=router, sinks=sinks)
+    for banner in banners:
+        print(f"{DIM}{banner}{RESET}")
+    try:
+        asyncio.run(host.serve())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+@dataclass
+class Transport:
+    """What one ``--flag`` contributes to the host."""
+
+    sources: list
+    sinks: list
+    router: object
+    banner: str
+
+
+def _missing(config: Config, profile, names: Sequence[tuple[str, object]], flag: str) -> bool:
+    absent = [name for name, value in names if not value]
+    if not absent:
+        return False
+    print(
+        f"{flag} needs: {', '.join(absent)} "
+        f"(in {config.profiles_dir / f'{profile.name}.md'} or the environment)",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _tools(profile) -> str:
+    return "*" if profile.tools is None else ", ".join(profile.tools) or "none"
+
+
+def _email(config: Config, profile_name: str) -> Transport | None:
+    """A mailbox, polled over IMAP. The mailbox, the allowlist, the toolset and
+    the instructions all come from the profile — ``email`` unless another is
+    named. The password does not: a secret is read from the environment only, so
+    a profile file stays safe to commit.
+    """
+    from .host import AllowlistRouter
     from .mail import ImapSource, open_ledger
 
     profile = load_profile(config, profile_name or "email")
@@ -120,27 +186,19 @@ def serve_email(config: Config, profile_name: str = "") -> int:
     user = profile.setting("imap_user")
     mailbox = profile.setting("imap_mailbox", "INBOX")
     allow = profile.setting_list("email_allow")
-    missing = [
-        name
-        for name, value in (
+    if _missing(
+        config,
+        profile,
+        (
             ("imap_host", host_name),
             ("imap_user", user),
             ("SIMPLE_AGENT_IMAP_PASSWORD", password),
             ("email_allow", allow),
-        )
-        if not value
-    ]
-    if missing:
-        print(
-            f"--email needs: {', '.join(missing)} "
-            f"(in {config.profiles_dir / f'{profile.name}.md'} or the environment)",
-            file=sys.stderr,
-        )
-        return 1
+        ),
+        "--email",
+    ):
+        return None
 
-    from .logs import configure
-
-    configure()
     source = ImapSource(
         host=host_name,
         user=user,
@@ -148,17 +206,97 @@ def serve_email(config: Config, profile_name: str = "") -> int:
         mailbox=mailbox,
         ledger=open_ledger(config),
     )
-    host = Host(config, sources=[source], router=AllowlistRouter(allow=allow, profile=profile))
-    tools = "*" if profile.tools is None else ", ".join(profile.tools) or "none"
-    print(
-        f"{DIM}watching {user} {mailbox} · profile {profile.name} "
-        f"· tools: {tools}{RESET}"
+    return Transport(
+        sources=[source],
+        sinks=[],  # email receives and answers nobody; see AllowlistRouter
+        router=AllowlistRouter(allow=allow, profile=profile),
+        banner=(
+            f"watching {user} {mailbox} · profile {profile.name} · tools: {_tools(profile)}"
+        ),
     )
+
+
+def _slack(config: Config, profile_name: str) -> Transport | None:
+    """A workspace over Socket Mode. Both tokens are secrets, so both are env-only."""
+    from .slack import SlackRouter, SlackSink, SlackSource, open_inbox
+
+    profile = load_profile(config, profile_name or "slack")
+    app_token = os.environ.get("SIMPLE_AGENT_SLACK_APP_TOKEN", "")
+    bot_token = os.environ.get("SIMPLE_AGENT_SLACK_BOT_TOKEN", "")
+    allow = profile.setting_list("slack_allow")
+    if _missing(
+        config,
+        profile,
+        (
+            ("SIMPLE_AGENT_SLACK_APP_TOKEN", app_token),
+            ("SIMPLE_AGENT_SLACK_BOT_TOKEN", bot_token),
+            ("slack_allow", allow),
+        ),
+        "--slack",
+    ):
+        return None
+
+    source = SlackSource(
+        app_token=app_token,
+        bot_token=bot_token,
+        inbox=open_inbox(config),
+        require_mention=profile.setting("slack_require_mention", "1").lower()
+        not in {"0", "false", "no", "off"},
+    )
+    return Transport(
+        sources=[source],
+        sinks=[SlackSink(bot_token=bot_token)],
+        router=SlackRouter(allow=allow, profile=profile),
+        banner=(
+            f"listening to slack {', '.join(allow)} · profile {profile.name} "
+            f"· tools: {_tools(profile)}"
+        ),
+    )
+
+
+def _cron(config: Config, profile_name: str) -> Transport | None:
+    """Jobs from ``~/.simple-agent/schedules/*.md``, each with its own destination."""
+    from dataclasses import replace
+
+    from .cron import CronRouter, CronSource, load_jobs, open_cursor
+
     try:
-        asyncio.run(host.serve())
-    except KeyboardInterrupt:
-        pass
-    return 0
+        jobs = load_jobs(config)
+    except (ValueError, OSError) as exc:  # a schedule or destination that cannot mean anything
+        print(f"--cron: {exc}", file=sys.stderr)
+        return None
+    if not jobs:
+        print(
+            f"--cron needs at least one job in {config.schedules_dir} "
+            "(a .md file: 'schedule:' in the frontmatter, the prompt in the body)",
+            file=sys.stderr,
+        )
+        return None
+    if profile_name:  # --profile names the default; a job may still override it
+        named = load_profile(config, profile_name)
+        jobs = tuple(replace(job, profile=job.profile or named) for job in jobs)
+
+    # A job that reports into Slack needs the Slack sink even when this host is
+    # not listening to Slack — otherwise its answer goes to dead letters and the
+    # reason is a puzzle. Host keys sinks by platform, so one given twice is one.
+    sinks = []
+    targets = {place.platform for job in jobs for place in job.to}
+    bot_token = os.environ.get("SIMPLE_AGENT_SLACK_BOT_TOKEN", "")
+    if "slack" in targets and bot_token:
+        from .slack import SlackSink
+
+        sinks.append(SlackSink(bot_token=bot_token))
+
+    lines = ", ".join(f"{job.name} ({job.schedule.expression})" for job in jobs)
+    return Transport(
+        sources=[CronSource(jobs, cursor=open_cursor(config))],
+        sinks=sinks,
+        router=CronRouter(jobs),
+        banner=f"{len(jobs)} schedule(s): {lines}",
+    )
+
+
+_BUILDERS = {"email": _email, "slack": _slack, "cron": _cron}
 
 
 def _take_profile(argv: list[str]) -> str:
@@ -181,10 +319,11 @@ def main(argv: list[str] | None = None) -> int:
 
         return mcp.main(argv[1:], config)
     profile_name = _take_profile(argv)
-    if argv[:1] == ["--email"]:
-        return serve_email(config, profile_name)
     if argv[:1] == ["--health"]:
         return health(config)
+    kinds = [SERVE_FLAGS[argument] for argument in argv if argument in SERVE_FLAGS]
+    if kinds:
+        return serve(config, kinds, profile_name)
     try:
         # One conversation per working directory, resumed on the next launch.
         agent = Agent(

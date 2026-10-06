@@ -49,7 +49,7 @@ Python 3.10+. No other dependencies.
 | --- | --- | --- |
 | Model | `anthropic`, `bedrock` (Converse; Bedrock API key or IAM via `AWS_PROFILE`), `gemini`, `openai` (Responses) | `SIMPLE_AGENT_PROVIDER`, `SIMPLE_AGENT_MODEL` |
 | Who the agent is | a profile: instructions, tools, learning, namespace | `SIMPLE_AGENT_PROFILE`, `~/.simple-agent/profiles/<name>.md` |
-| Inputs / outputs | `Source` → `Router` → `Sink`; an IMAP email source is included (the terminal REPL is its own host) | code: `simple_agent/seams.py` |
+| Inputs / outputs | `Source` → `Router` → `Sink`; email (IMAP), Slack (Socket Mode) and the clock (cron) are included, and compose in one process (the terminal REPL is its own host) | code: `simple_agent/seams.py` |
 | Tools | any stdio MCP server, plus the built-ins | `~/.simple-agent/mcp.json` |
 | Tool policy | mods: refuse, rewrite or redact a tool call | `~/.simple-agent/mods/<name>.py` |
 | Storage | files under `~/.simple-agent` (default) or Postgres — transcripts, memory and skills together | `SIMPLE_AGENT_DATABASE_URL` |
@@ -87,10 +87,10 @@ file: the instructions in the system prompt, the toolset, whether the
 conversation may write to long-term memory and skills, and whose memory it
 reads.
 
-Two are built in. `terminal` has every tool and learns; `email` has read-only
-tools and learns nothing, because an inbox anyone can write to must not be able
-to teach the conversations you trust. Those two halves are one setting each, in
-one place, so they cannot drift apart.
+Three are built in. `terminal` has every tool and learns; `email` and `slack`
+have read-only tools and learn nothing, because a route anyone can write into
+must not be able to teach the conversations you trust. Those two halves are one
+setting each, in one place, so they cannot drift apart.
 
 Amend either, or add your own, with a file — the same shape as a skill:
 
@@ -186,6 +186,15 @@ configured. `--tools` narrows what it serves:
 `--profile` lends that harness a profile instead — its toolset and its memory
 namespace — and `--tools` narrows what is left, never widens it.
 
+Or let the other harness take the loop entirely.
+[`examples/claude-code-host`](examples/claude-code-host) is a working
+deployment where `claude -p` answers the messages and this repo keeps the rest:
+Slack and an inbox as the routes, a profile per route (translated into Claude
+Code's allowlist, both halves enforced), the conversations in Postgres, and
+Hindsight as long-term memory over MCP. The other shape is in this repo
+already: a schedule as a Source, sweeping GitHub pull requests on a cron and
+staying quiet unless one needs a person.
+
 A PM, sales, or marketing agent is the same loop given different tools (MCP
 servers) and skills.
 
@@ -235,12 +244,84 @@ write memory or skills that your trusted sessions later load. Widen it
 knowingly, and widen both halves consciously — they are two lines of the same
 file.
 
+## Slack
+
+```bash
+SIMPLE_AGENT_SLACK_APP_TOKEN=xapp-...   # app-level token, connections:write
+SIMPLE_AGENT_SLACK_BOT_TOKEN=xoxb-...   # bot token
+SIMPLE_AGENT_SLACK_ALLOW='#ops,dm' \
+simple-agent --slack
+```
+
+Socket Mode, so the connection is outbound: no public URL, no load balancer, no
+request signatures — the same container that runs the mail host runs this one.
+In the Slack app: enable Socket Mode, subscribe to `message.channels` and
+`message.im`, and give the bot `chat:write`, `reactions:write` and
+`channels:history` / `im:history`.
+
+What it does with a message: in a channel it answers only when mentioned, in a
+thread off the question, so the question, the answer and every follow-up are one
+conversation. A direct message needs no mention. While a turn runs the
+triggering message carries a 👀 — progress belongs on the message, not as a
+commentary in a channel everyone is reading. Markdown is converted to Slack's
+own markup on the way out, and an answer too long for one message is split
+without breaking a code block.
+
+Each event is written down before it is acknowledged (Socket Mode gives you
+three seconds, which is not an answer), so a crash mid-turn replays the question
+instead of losing it, and a re-delivery after a reconnect does not answer twice.
+
+A message that is nothing but **`stop`** — or `cancel`, `やめて`, `中止`, and a
+few more — means "do not post what you are writing". A thread is answered in
+order, so it is the one message that cannot wait its turn: it is read as it
+arrives rather than after the lock, and the answer in flight is dropped instead
+of delivered. Only whole messages count, so *"stop the deploy and tell me what
+broke"* is a question. The work itself still finishes — this cancels the answer,
+not the turn — and `stop_words` in the profile replaces the list, or `none`
+turns it off.
+
+Like mail, a workspace is **untrusted input**: anyone in it can type. The `slack`
+profile is read-only with `learning: false`, and `slack_allow` is a cost filter,
+not a boundary.
+
+## Schedules
+
+A job is a file in `~/.simple-agent/schedules/`, the same shape as a skill or a
+profile — frontmatter, then the prompt:
+
+```markdown
+---
+schedule: 0 9 * * 1-5        # also @daily, @hourly, @every 10m
+tz: Asia/Tokyo
+to: slack:C0123ABC           # where the answer goes; omit to tell nobody
+catch_up: true               # make up a firing a deploy spanned
+---
+
+Summarize yesterday's failed deploys and anything still red.
+```
+
+```bash
+simple-agent --cron            # schedules only
+simple-agent --slack --cron    # one process: questions and schedules
+```
+
+The clock is a Source like any other, so a scheduled run is a message with the
+time filled in by whoever wrote the job — which makes it *more* trusted than an
+inbox, not less. A job keeps the host's own profile unless it names another, and
+each firing is a fresh conversation unless it asks for `history: true`.
+
+A firing is claimed before the turn and never replayed: if the host dies at
+09:00:30, the digest arrives tomorrow, not four minutes later. Mail and Slack
+replay because somebody is waiting; a schedule has next time. The claim is also
+what keeps two tasks on one database from sending everything twice.
+
 ## Deploy (AWS ECS Fargate)
 
 The image holds the agent only. Production defaults are baked in: a non-root
 user, JSON logs, no `terminal` tool, a health check (`simple-agent --health`),
-and `simple-agent --email` as the command. What is yours — MCP servers and
-their configuration — goes in an image built from it:
+and `simple-agent --email` as the command — change it to `--slack --cron`, or
+any combination, and it is still one task. What is yours — MCP servers and their
+configuration — goes in an image built from it:
 
 ```dockerfile
 FROM ghcr.io/you/simple-agent:latest          # built from this repo's Dockerfile
