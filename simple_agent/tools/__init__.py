@@ -7,6 +7,11 @@ touches the loop; the loop only ever asks the registry for ``schemas()`` and
 ``parallel_safe`` is the one piece of metadata the loop cares about: read-only
 tools fan out across a thread pool, anything that mutates state runs serially in
 the order the model asked for it.
+
+:meth:`ToolRegistry.call` is the only way a tool call becomes an action — the
+loop, the MCP server and the REPL's slash commands all go through it — so it
+is also where mods get their say.  A rule written once holds no matter who
+asked; see :mod:`simple_agent.mods`.
 """
 
 from __future__ import annotations
@@ -33,8 +38,10 @@ class Tool:
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, mods: Any = None) -> None:
         self._tools: dict[str, Tool] = {}
+        # Policy between the model and the tools. None = nothing to ask.
+        self.mods = mods
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -73,21 +80,38 @@ class ToolRegistry:
         """
         from fnmatch import fnmatchcase
 
-        clone = ToolRegistry()
+        # The clone keeps the mods: narrowing which tools exist must not
+        # quietly drop the rules about calling them.
+        clone = ToolRegistry(self.mods)
         for name, tool in self._tools.items():
             if any(fnmatchcase(name, pattern) for pattern in names):
                 clone.register(tool)
         return clone
 
     def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Run a tool. Returns ``(output, is_error)``; never raises."""
+        """Run a tool. Returns ``(output, is_error)``; never raises.
+
+        A refusal from a mod comes back as an ordinary error result, so the
+        model reads why it could not do that and carries on, rather than the
+        turn ending in a way it cannot account for.
+        """
         tool = self._tools.get(name)
         if tool is None:
             return f"Unknown tool: {name}", True
+        if self.mods:
+            arguments, denial = self.mods.before_tool(name, arguments)
+            if denial:
+                return denial, True
+        output, is_error = self._run(tool, arguments)
+        if self.mods:
+            output = self.mods.after_tool(name, arguments, output, is_error)
+        return output, is_error
+
+    def _run(self, tool: Tool, arguments: dict[str, Any]) -> tuple[str, bool]:
         try:
             result = tool.fn(**arguments)
         except TypeError as exc:
-            return f"Bad arguments for {name}: {exc}", True
+            return f"Bad arguments for {tool.name}: {exc}", True
         except Exception as exc:  # a failing tool is a result, not a crash
             return f"{type(exc).__name__}: {exc}", True
         if not isinstance(result, str):
@@ -95,11 +119,11 @@ class ToolRegistry:
         return result, False
 
 
-def build_registry(config, memory, skills, store) -> ToolRegistry:
+def build_registry(config, memory, skills, store, mods: Any = None) -> ToolRegistry:
     """Assemble the default toolset. ``memory`` is long-term memory."""
     from . import files, memory_tool, session_search, skill_tool, terminal
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(mods)
     terminal.register(registry, config)
     files.register(registry)
     memory_tool.register(registry, memory)

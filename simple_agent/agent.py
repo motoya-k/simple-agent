@@ -10,7 +10,7 @@ core.  Nothing below imports a vendor SDK, a chat platform, or a renderer.
 
 *Who* it is comes from a :class:`~simple_agent.profile.Profile`: the system
 prompt's instructions, the toolset, whether the turn may teach long-term
-memory, and which namespace it reads.  The class holds no identity of its own,
+memory, which namespace it reads, and the mods that may refuse a tool call.  The class holds no identity of its own,
 so the same core serves a terminal and an inbox without a branch.
 
 Two responsibilities are easy to miss and hard to add later:
@@ -35,6 +35,7 @@ from .config import Config
 from .context import session_scope
 from .loop import Budget, Turn, run_conversation
 from .memory import LongTermMemory, format_recall, open_memory
+from .mods import load_mods
 from .profile import Profile, load_profile
 from .providers import get_provider
 from .review import spawn_background_review
@@ -86,7 +87,12 @@ class Agent:
 
         self.memory = memory or open_memory(self.config, self.namespace)
 
-        self.registry = build_registry(self.config, self.memory, self.skills, self.store)
+        # Loaded here, before the first turn: a mod the profile names but that
+        # is missing must stop the agent, not go unnoticed until it mattered.
+        self.mods = load_mods(self.config, self.profile.mods)
+        self.registry = build_registry(
+            self.config, self.memory, self.skills, self.store, mods=self.mods
+        )
         if tools is None:
             tools = self.profile.tools
         if tools is not None:

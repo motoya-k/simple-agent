@@ -8,13 +8,15 @@
 
 多くのエージェントは、ループ、ツール、チャットとの連携、記憶、モデルがひとまとまりの製品として提供されます。そのため、どれか 1 つを変えたくなると、残りも含めてフォークすることになります。simple-agent は逆の方針を取ります。コアは標準ライブラリだけで書いた数千行の Python で、その周りの層はそれぞれ小さなインターフェースの後ろにあり、設定で差し替えられます。
 
+はじめての方は [INTRODUCTION.ja.md](INTRODUCTION.ja.md) をどうぞ。エージェントの実装を読むのが初めてという前提で、ループ、ツール、記憶の 3 層、本番に必要なものまでを一通り解説しています。
+
 ## 他のエージェントとの比較
 
 |                  | simple-agent | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | [OpenClaw](https://github.com/openclaw/openclaw) |
 | ---------------- | ------------ | ------------ | ------------ |
 | 言語             | Python       | Python       | TypeScript   |
 | 実行時の依存     | **0**        | 45           | 66           |
-| コード行数¹      | **約 6.2k**  | 約 887k      | 約 4.4M      |
+| コード行数¹      | **約 6.4k**  | 約 887k      | 約 4.4M      |
 | ライセンス       | MIT          | MIT          | MIT          |
 
 ¹ テストを除いたソースの行数。simple-agent は 2026-10-06、他の 2 つは 2026-09-29 に、それぞれのデフォルトブランチで計測しました。
@@ -42,6 +44,7 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 | エージェントの人格 | プロファイル（指示文・使えるツール・学習の有無・記憶の namespace） | `SIMPLE_AGENT_PROFILE`、`~/.simple-agent/profiles/<名前>.md` |
 | 入力と出力 | `Source` → `Router` → `Sink`。IMAP メールの Source を同梱（ターミナルの REPL は別のホスト） | コード：`simple_agent/seams.py` |
 | ツール | stdio で動く MCP サーバー（組み込みのツールに加わる） | `~/.simple-agent/mcp.json` |
+| ツールのポリシー | mod（呼び出しの拒否・引数の書き換え・出力の伏せ字） | `~/.simple-agent/mods/<名前>.py` |
 | 保存先 | `~/.simple-agent` の下のファイル（既定）か Postgres。会話履歴・記憶・スキルがまとめて動く | `SIMPLE_AGENT_DATABASE_URL` |
 
 設定は環境変数か `~/.simple-agent/config.yaml`（同じキーを小文字で）に書きます。両方にある場合は環境変数が優先されます。設定項目の一覧は `.env.example` にあります。
@@ -86,6 +89,39 @@ simple-agent --email --profile support    # メールのホストとして動か
 ```
 
 `tools: '*'` と書くとすべてのツールを使えます。環境変数のほうが優先されるので、コンテナではファイルを置かずに設定できます。4 つの項目は `SIMPLE_AGENT_SUPPORT_TOOLS`、`_LEARNING`、`_NAMESPACE`、その他の設定は `SIMPLE_AGENT_IMAP_HOST`、`SIMPLE_AGENT_EMAIL_ALLOW` です。パスワードは環境変数からしか読みません。ファイルには書かないので、プロファイルはリポジトリに入れても安全です。
+
+## mod：ツール呼び出しに口を出す
+
+ここにあるほかの差し込み口は、どれも「自分で実装するもの」です。provider は翻訳し、Source は受け取り、ツールは実行します。mod はそのどれにもなれないものです。つまり、**モデルにもツールにも任せたくない判断**です。「このルートでは `rm -rf` を絶対に通さない」「シェルが何を出力してもトークンは消す」「このパスはプロジェクトの外に出られないように書き換える」。
+
+mod は `~/.simple-agent/mods/<名前>.py` に置くファイルで、2 つのフックのどちらか、または両方を書きます。
+
+```python
+def before_tool(name, arguments):
+    if name == "terminal" and "rm -rf" in arguments.get("command", ""):
+        return Deny("rm -rf is not allowed here")
+    return None                                  # 意見なし
+
+def after_tool(name, arguments, output, is_error):
+    return output.replace(TOKEN, "[redacted]")   # モデルが読む内容
+```
+
+`before_tool` が返せるのは `None`、`Deny`（最初から名前が通っています。import しても構いません）、差し替え後の `arguments` の 3 つです。拒否はふつうのエラー結果としてモデルに届くので、モデルは理由を読んでから次に進めます。mod は書いた順に呼ばれ、後の mod は前の mod の判断を見ます。
+
+ルートごとの mod はプロファイルに書き、どのルートでも必ず動かすものは `SIMPLE_AGENT_MODS` に書きます。後者はプロファイル側から外せません。
+
+```markdown
+---
+tools: '*'
+mods: no-rm, redact-secrets
+---
+```
+
+ツール呼び出しが実際の動作になる道は `ToolRegistry.call` だけです（ループ、バックグラウンドのレビュアー、REPL のスラッシュコマンド、`--mcp` がすべてここを通ります）。だから 1 か所書いたルールは、誰が呼んでも効きます。MCP でツールを借りている別のハーネスからの呼び出しも含みます。
+
+**2 つのフックは、わざと逆方向に倒れます。** `before_tool` が例外を出したら、その呼び出しは**拒否**します。プロファイルが名前を書いた mod が見つからないときも、起動時に止まります。落ちたポリシーは何も承認していないからです。`after_tool` が例外を出したときは無視して元の出力を使います。こちらはモデルが読む内容を整えるだけなので、伏せ字に失敗したことでターンを失うほうが損だからです。
+
+書く前に 2 つだけ。mod は別プロセスの MCP サーバーではなく、**同じプロセスで動く Python** です。エージェントと同じ権限を持つ信頼コードなので、自分で書いたか中身を読んだものだけを置いてください。それと、読み取り専用のツールはスレッドに分かれて並列に走るので、フックは複数スレッドから同時に呼ばれても安全に書く必要があります。
 
 ## ほかのハーネスから使う
 
