@@ -98,6 +98,10 @@ class Config:
         return self.home / "mods"
 
     @property
+    def schedules_dir(self) -> Path:
+        return self.home / "schedules"
+
+    @property
     def state_db(self) -> Path:
         return self.home / "state.db"
 
@@ -124,6 +128,7 @@ class Config:
             cfg.skills_dir,
             cfg.profiles_dir,
             cfg.mods_dir,
+            cfg.schedules_dir,
             cfg.shell_state_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)

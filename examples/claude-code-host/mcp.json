@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "simple_agent": {
+      "command": "simple-agent",
+      "args": ["--mcp", "--tools", "skill_view,skill_manage,session_search"],
+      "env": {
+        "SIMPLE_AGENT_HOME": "${SIMPLE_AGENT_HOME}",
+        "SIMPLE_AGENT_DATABASE_URL": "${SIMPLE_AGENT_DATABASE_URL}",
+        "SIMPLE_AGENT_MEMORY_NAMESPACE": "${namespace}"
+      }
+    },
+    "hindsight": {
+      "type": "http",
+      "url": "${HINDSIGHT_URL}/mcp/${namespace}/",
+      "headers": { "Authorization": "Bearer ${HINDSIGHT_API_KEY}" }
+    },
+    "notion": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "env": { "NOTION_TOKEN": "${NOTION_TOKEN}" }
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"
+      }
+    },
+    "google": {
+      "command": "uvx",
+      "args": ["workspace-mcp", "--tool-tier", "core"],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+        "USER_GOOGLE_EMAIL": "${USER_GOOGLE_EMAIL}"
+      }
+    }
+  }
+}

@@ -162,3 +162,17 @@ class Router(ABC):
 
     @abstractmethod
     def route(self, message: InboundMessage) -> Route | None: ...
+
+    def stops(self, message: InboundMessage) -> bool:
+        """True when this message means "do not send the answer being written".
+
+        Asked the moment the message arrives, before the conversation's turn
+        lock — which is the whole point.  Messages in one conversation are
+        answered in order, so by the time this one were routed normally, the
+        answer it meant to stop would already be in the channel.
+
+        It stops the *answer*, not the work: the turn runs to the end and its
+        result is simply not delivered.  The default recognizes nothing, which
+        is right for a route that does not answer anyone.
+        """
+        return False
