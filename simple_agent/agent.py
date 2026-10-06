@@ -8,6 +8,11 @@ Everything it holds is an injected collaborator — provider, tools, memory,
 skills, store, compactor — so a different host swaps parts without forking the
 core.  Nothing below imports a vendor SDK, a chat platform, or a renderer.
 
+*Who* it is comes from a :class:`~simple_agent.profile.Profile`: the system
+prompt's instructions, the toolset, whether the turn may teach long-term
+memory, and which namespace it reads.  The class holds no identity of its own,
+so the same core serves a terminal and an inbox without a branch.
+
 Two responsibilities are easy to miss and hard to add later:
 
 * **The transcript outlives the process.**  Every message is written to the
@@ -30,32 +35,13 @@ from .config import Config
 from .context import session_scope
 from .loop import Budget, Turn, run_conversation
 from .memory import LongTermMemory, format_recall, open_memory
+from .profile import Profile, load_profile
 from .providers import get_provider
 from .review import spawn_background_review
 from .session import SessionSource, build_session_key, is_shared_multi_user_session
 from .skills import SkillLibrary, open_skills
 from .state import Store, open_store
 from .tools import build_registry
-
-IDENTITY = """You are a capable, self-improving assistant working alongside a user on their \
-own machine.
-
-How you work:
-- Prefer acting over asking. Use the terminal and file tools to find things out \
-instead of asking the user to describe them.
-- Report what actually happened. If a command failed, say so and show the error.
-- Be brief. The user is reading a terminal, not a document.
-
-What you know comes in three kinds; keep them apart:
-- This conversation is your short-term memory. The task, what you just read, \
-the plan — it lives here and nowhere else.
-- Long-term memory is what this team already knows: conventions, owners, \
-system names, decisions, how people here want work done. Relevant items arrive \
-with each message in a <long_term_memory> block; memory_search finds more, and \
-memory_save records a new team fact.
-- Skills are abstract procedures you wrote in earlier sessions. Only names and \
-descriptions are listed below; read one with skill_view before following it, \
-and fill in the team-specific values it refers to from long-term memory."""
 
 SHARED_CONVERSATION_NOTE = """This conversation is shared: more than one person can speak \
 into it, and messages you see may come from different people. Do not assume the \
@@ -72,6 +58,7 @@ class Agent:
         source: SessionSource | None = None,
         session_key: str | None = None,
         resume: bool = True,
+        profile: Profile | None = None,
         provider: Any = None,
         memory: LongTermMemory | None = None,
         skills: SkillLibrary | None = None,
@@ -80,9 +67,15 @@ class Agent:
         tools: Iterable[str] | None = None,
     ) -> None:
         self.config = config or Config.load()
+        self.profile = profile or load_profile(self.config)
+        # One namespace for both: the team whose knowledge this conversation
+        # reads is the team whose conversation it is.
+        self.namespace = self.profile.namespace or self.config.memory_namespace
         self.cwd = cwd or os.getcwd()
         self.source = source or SessionSource.local(self.cwd)
-        self.session_key = session_key or build_session_key(self.source)
+        self.session_key = session_key or build_session_key(
+            self.source, profile=self.namespace
+        )
         self.shared = is_shared_multi_user_session(self.source)
 
         # Built here so a missing API key fails at start, not on the first turn.
@@ -91,13 +84,18 @@ class Agent:
         self.store = store or open_store(self.config)
         self.compactor = compactor or TailCompactor()
 
-        self.memory = memory or open_memory(self.config)
+        self.memory = memory or open_memory(self.config, self.namespace)
 
         self.registry = build_registry(self.config, self.memory, self.skills, self.store)
+        if tools is None:
+            tools = self.profile.tools
         if tools is not None:
             # A narrowed toolset is how an untrusted route (an inbox anyone can
-            # write to) runs without a terminal. See seams.Route.
+            # write to) runs without a terminal. See profile.py.
             self.registry = self.registry.subset(list(tools))
+        # The profile and the config both have to allow it: a profile cannot
+        # turn learning on where the deployment turned it off.
+        self.learning = self.config.learning and self.profile.learning
         self.skills.curate()  # age skills once per session, never delete
 
         self.messages: list[dict[str, Any]] = []
@@ -128,7 +126,7 @@ class Agent:
 
     def _build_system_prompt(self) -> str:
         sections = [
-            IDENTITY,
+            self.profile.instructions,
             f"<environment>\n"
             f"os: {platform.system()} {platform.release()}\n"
             f"cwd: {self.cwd}\n"
@@ -176,7 +174,7 @@ class Agent:
                 # and a crash is exactly when resuming matters.
                 self._persist_new_messages()
 
-            if self.config.learning and turn.complete:
+            if self.learning and turn.complete:
                 spawn_background_review(self, list(self.messages))
             return turn
 
