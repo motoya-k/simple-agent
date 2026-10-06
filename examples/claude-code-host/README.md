@@ -10,8 +10,8 @@ loop in the middle. Everything below is that command with one thing replaced.
 
 ```
 Slack  ──┐                                                   ┌─→ the same thread
-         ├─→ Source ─→ Router ─→ claude -p ──────→ Sink ──────┤
-mail   ──┘            profile      │                         └─→ #ops (for mail)
+mail   ──┤─→ Source ─→ Router ─→ claude -p ──────→ Sink ──────┤
+clock  ──┘            profile      │                         └─→ #ops (mail, schedules)
                                    │
                          ┌─────────┴──────────┐
                          │ notion             │  tools
@@ -41,7 +41,7 @@ Slack (Socket Mode), IMAP, the schedules and the routers come from the library �
 ```bash
 pip install -e ".[postgres]"                      # from the repo root
 cp examples/claude-code-host/profiles/*.md ~/.simple-agent/profiles/
-$EDITOR ~/.simple-agent/profiles/slack.md         # channel ids, namespace
+$EDITOR ~/.simple-agent/profiles/slack.md         # slack_allow, namespace
 $EDITOR ~/.simple-agent/profiles/email.md         # mailbox, allowlist, #ops channel
 
 export SIMPLE_AGENT_DATABASE_URL=postgresql://...     # transcripts and skills
