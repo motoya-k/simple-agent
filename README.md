@@ -43,7 +43,6 @@ Python 3.10+. No other dependencies.
 | Layer | Options | Set with |
 | --- | --- | --- |
 | Model | `anthropic`, `bedrock` (Converse; Bedrock API key or IAM via `AWS_PROFILE`), `gemini`, `openai` (Responses) | `SIMPLE_AGENT_PROVIDER`, `SIMPLE_AGENT_MODEL` |
-| Harness | `loop` (built in), or an external harness run as a subprocess: `pi`, `claude-code`, `goose`, `opencode` | `SIMPLE_AGENT_ENGINE`, `SIMPLE_AGENT_ENGINE_ARGS` |
 | Inputs / outputs | `Source` → `Router` → `Sink`; an IMAP email source is included (the terminal REPL is its own host) | code: `simple_agent/seams.py` |
 | Memory | `local`, `mem0`, `hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
 | Transcripts | SQLite (default), Postgres | `SIMPLE_AGENT_DATABASE_URL` |
@@ -51,41 +50,22 @@ Python 3.10+. No other dependencies.
 Settings come from environment variables or `~/.simple-agent/config.yaml`
 (same keys, lower case); the environment wins. `.env.example` lists them all.
 
-Adding a provider or an engine is one new file plus one line in a registry —
-never a change to the loop.
+Adding a provider is one new file plus one line in a registry — never a
+change to the loop.
 
-### Mix and match
+## Use from another harness
 
-The three big choices are independent. The harness owns only the loop; the
-model, memory, and tool permissions are chosen once and handed to it.
+The loop is this repo's own. To work from Claude Code, Codex, Goose, or any
+other MCP-capable harness instead, register `simple-agent --mcp` there: it
+serves memory, skills, and session search over MCP on stdio, so that harness
+reads and writes the same memory as this agent, whichever backend is
+configured. `--tools` narrows what it serves:
 
-```yaml
-# ~/.simple-agent/config.yaml
-engine: pi              # who runs the loop
-provider: bedrock       # which LLM — passed to pi as --provider amazon-bedrock
-memory_backend: mem0    # which memory — pi reads and writes it through our tools
+```json
+{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}
 ```
 
-External harnesses reach memory, skills, and session search through
-`simple-agent --mcp`, an MCP server on stdio that serves only the tools the
-current route allows. pi has no MCP client, so a bundled pi extension bridges
-to it. Any MCP-capable harness can use it directly, e.g.
-`{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}`.
-An impossible combination (an engine that cannot run the configured provider)
-fails at start.
-
-| Engine | Harness | Providers | How our tools reach it |
-| --- | --- | --- | --- |
-| `loop` | this repo | all | directly |
-| `pi` | [pi](https://github.com/badlogic/pi-mono) | anthropic, bedrock, gemini, openai | pi extension → MCP |
-| `claude-code` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | anthropic, bedrock | MCP (`--mcp-config`) |
-| `goose` | [Goose](https://github.com/aaif-goose/goose) | anthropic, bedrock, openai | MCP extension |
-| `opencode` | [OpenCode](https://github.com/sst/opencode) | anthropic, bedrock, gemini, openai | MCP (inline config) |
-| `hermes` | [Hermes Agent](https://github.com/NousResearch/hermes-agent) — self-improving; where this repo started | anthropic, bedrock | MCP (isolated `HERMES_HOME`) |
-| `mini-swe` | [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) — ~200-line loop, bash is the only tool | anthropic, bedrock, gemini, openai | none: context in the task; needs `terminal` |
-
-The harness decides *how* the work is done, not *what* it is about: a PM,
-sales, or marketing agent is the same harness given different tools (MCP
+A PM, sales, or marketing agent is the same loop given different tools (MCP
 servers) and skills.
 
 ## Connect MCP servers
@@ -98,8 +78,8 @@ Cursor, and Claude Code use:
 ```
 
 Their tools join the agent as `<server>__<tool>` (e.g. `google__calendar_list`),
-on every engine: external harnesses receive them through `simple-agent --mcp`,
-so a server is declared once. Allowlists accept patterns, so a route can take
+and other harnesses receive them through `simple-agent --mcp`, so a server is
+declared once. Allowlists accept patterns, so a route can take
 a server's read tools only:
 
 ```bash

@@ -39,39 +39,23 @@ Python 3.10 以上が必要です。それ以外の依存はありません。
 | 層 | 選択肢 | 設定 |
 | --- | --- | --- |
 | モデル | `anthropic`、`bedrock`（Converse。Bedrock API キーか、`AWS_PROFILE` の IAM 認証）、`gemini`、`openai`（Responses） | `SIMPLE_AGENT_PROVIDER`、`SIMPLE_AGENT_MODEL` |
-| ハーネス | `loop`（組み込み）、または外部のハーネスをサブプロセスで実行：`pi`、`claude-code`、`goose`、`opencode` | `SIMPLE_AGENT_ENGINE`、`SIMPLE_AGENT_ENGINE_ARGS` |
 | 入力と出力 | `Source` → `Router` → `Sink`。IMAP メールの Source を同梱（ターミナルの REPL は別のホスト） | コード：`simple_agent/seams.py` |
 | 記憶 | `local`、`mem0`、`hindsight` | `SIMPLE_AGENT_MEMORY_BACKEND` |
 | 会話履歴 | SQLite（既定）、Postgres | `SIMPLE_AGENT_DATABASE_URL` |
 
 設定は環境変数か `~/.simple-agent/config.yaml`（同じキーを小文字で）に書きます。両方にある場合は環境変数が優先されます。設定項目の一覧は `.env.example` にあります。
 
-プロバイダやエンジンを足すときは、ファイルを 1 つ追加し、登録表に 1 行書くだけです。ループには手を入れません。
+プロバイダを足すときは、ファイルを 1 つ追加し、登録表に 1 行書くだけです。ループには手を入れません。
 
-### 自由に組み合わせる
+## ほかのハーネスから使う
 
-ハーネス・LLM・記憶の 3 つは、互いに独立して選べます。ハーネスが受け持つのはループだけです。モデル、記憶、ツールの許可は simple-agent が一度だけ決めて、ハーネスに渡します。
+ループはこのリポジトリのものです。Claude Code、Codex、Goose など MCP に対応したハーネスで作業したい場合は、そのハーネスに `simple-agent --mcp` を登録します。これは標準入出力で動く MCP サーバーで、記憶・スキル・過去の会話の検索を公開します。どの記憶の保存先を設定していても、そのハーネスはこのエージェントと同じ記憶を読み書きします。公開するツールは `--tools` で絞れます。
 
-```yaml
-# ~/.simple-agent/config.yaml
-engine: pi              # ループを回すハーネス
-provider: bedrock       # LLM。pi には --provider amazon-bedrock として渡る
-memory_backend: mem0    # 記憶。pi も simple-agent のツール経由で読み書きする
+```json
+{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}
 ```
 
-外部のハーネスは、`simple-agent --mcp` を通して記憶・スキル・過去の会話の検索を使います。これは標準入出力で動く MCP サーバーで、そのルートで許可されたツールだけを公開します。pi は MCP に対応していないので、同梱の pi 拡張機能が橋渡しをします。MCP に対応したハーネスなら、`{"command": "simple-agent", "args": ["--mcp", "--tools", "memory_search,memory_save"]}` のように直接つなげます。ハーネスが設定された LLM を扱えない組み合わせは、起動した時点でエラーになります。
-
-| エンジン | ハーネス | 使える LLM | simple-agent のツールの届け方 |
-| --- | --- | --- | --- |
-| `loop` | このリポジトリ | すべて | 直接 |
-| `pi` | [pi](https://github.com/badlogic/pi-mono) | anthropic、bedrock、gemini、openai | pi 拡張機能 → MCP |
-| `claude-code` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | anthropic、bedrock | MCP（`--mcp-config`） |
-| `goose` | [Goose](https://github.com/aaif-goose/goose) | anthropic、bedrock、openai | MCP 拡張 |
-| `opencode` | [OpenCode](https://github.com/sst/opencode) | anthropic、bedrock、gemini、openai | MCP（インライン設定） |
-| `hermes` | [Hermes Agent](https://github.com/NousResearch/hermes-agent)：自己改善型。この repo の出発点 | anthropic、bedrock | MCP（隔離した `HERMES_HOME`） |
-| `mini-swe` | [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)：約 200 行のループで、ツールは bash だけ | anthropic、bedrock、gemini、openai | なし（文脈はタスク文に入れる）。`terminal` の許可が必要 |
-
-ハーネスが決めるのは「どう進めるか」で、「何の仕事か」ではありません。PM 向け、営業向け、マーケ向けのエージェントは、同じハーネスに別のツール（MCP サーバー）とスキルを渡したものです。
+PM 向け、営業向け、マーケ向けのエージェントは、同じループに別のツール（MCP サーバー）とスキルを渡したものです。
 
 ## MCP サーバーをつなぐ
 
@@ -81,7 +65,7 @@ memory_backend: mem0    # 記憶。pi も simple-agent のツール経由で読�
 {"mcpServers": {"google": {"command": "uvx", "args": ["some-google-workspace-mcp"], "env": {"...": "..."}}}}
 ```
 
-サーバーのツールは `<サーバー名>__<ツール名>`（例：`google__calendar_list`）としてエージェントに加わり、どのエンジンでも使えます。外部のハーネスには `simple-agent --mcp` を通して届くので、サーバーの設定は 1 か所で済みます。許可リストにはワイルドカードが使えるので、たとえばメール経由のルートには読み取り系のツールだけを渡せます。
+サーバーのツールは `<サーバー名>__<ツール名>`（例：`google__calendar_list`）としてエージェントに加わります。ほかのハーネスにも `simple-agent --mcp` を通して届くので、サーバーの設定は 1 か所で済みます。許可リストにはワイルドカードが使えるので、たとえばメール経由のルートには読み取り系のツールだけを渡せます。
 
 ```bash
 SIMPLE_AGENT_EMAIL_TOOLS='skill_view,google__*_list,google__*_get' simple-agent --email

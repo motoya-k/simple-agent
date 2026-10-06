@@ -30,11 +30,6 @@ PROVIDER_DEFAULT_MODELS = {
 
 KEYS = (
     "provider",
-    "engine",
-    "engine_command",
-    "engine_args",
-    "pi_command",  # older names for engine_command / engine_args
-    "pi_args",
     "model",
     "review_model",
     "learning",
@@ -55,14 +50,6 @@ KEYS = (
 @dataclass
 class Config:
     provider: str = "anthropic"
-    # Who runs the turn: "loop" (this repo) or an external harness — "pi",
-    # "claude-code", ... (see engines/). engine_command overrides the executable;
-    # engine_args is passed through to it, e.g. to override its model flag.
-    engine: str = "loop"
-    engine_command: str = ""
-    engine_args: str = ""
-    pi_command: str = ""
-    pi_args: str = ""
     model: str = ""  # empty = the provider's default
     review_model: str = ""
     learning: bool = True  # background memory/skill review after each turn
