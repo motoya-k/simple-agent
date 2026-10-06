@@ -295,10 +295,19 @@ def allowed_tools(
     point — the two halves of :mod:`simple_agent.profile`'s boundary cannot be
     loosened one at a time by accident.
     """
+    servers = tuple(servers)
     if profile.tools is None:
         names = tuple(f"mcp__{server}" for server in servers)
     else:
         names = tuple(_translate(name, local_server) for name in profile.tools)
+    undeclared = sorted({name.split("__")[1] for name in names} - set(servers))
+    if undeclared:
+        raise ValueError(
+            f"profile {profile.name!r} allows tools from {', '.join(undeclared)}, which "
+            f"mcp.json does not declare. A tool that is not there is not an error when it is "
+            f"called: it is the model saying it cannot do the thing, in a channel, once a day. "
+            f"Add the server or narrow the profile."
+        )
     if not profile.learning:
         teaching = [name for name in names if _teaches(name)]
         if teaching:

@@ -69,6 +69,13 @@ def test_learning_off_refuses_a_tool_that_teaches(tool):
         allowed_tools(profile, SERVERS)
 
 
+def test_a_tool_from_a_server_nobody_declared_is_refused():
+    # The failure it prevents is silent: the model simply says it cannot.
+    profile = Profile(name="pr-watch", instructions="", tools=("github__*",))
+    with pytest.raises(ValueError, match="mcp.json does not declare"):
+        allowed_tools(profile, SERVERS)
+
+
 def test_learning_off_keeps_the_read_tools():
     profile = Profile(
         name="email",
@@ -240,7 +247,8 @@ def test_a_schedule_alone_is_a_host(config, tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SIMPLE_AGENT_MCP_TEMPLATE", str(tmp_path / "mcp.json"))
     (tmp_path / "mcp.json").write_text(
-        '{"mcpServers": {"hindsight": {"type": "http", "url": "http://h/mcp/${namespace}/"}}}',
+        '{"mcpServers": {"hindsight": {"type": "http", "url": "http://h/mcp/${namespace}/"},'
+        ' "simple_agent": {"command": "simple-agent", "args": ["--mcp"]}}}',
         encoding="utf-8",
     )
 

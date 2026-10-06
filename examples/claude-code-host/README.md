@@ -63,7 +63,9 @@ the message scopes for what it listens to. Invite it to each channel in
 
 Any job in `~/.simple-agent/schedules/` runs in the same process — so
 [`../pr-watch`](../pr-watch)'s schedule, answered by Claude Code, is that file
-copied in and nothing else.
+copied in plus GitHub's server added to `mcp.json`. A profile that names a
+server the config does not declare refuses to start, so you find that out now
+rather than from a model saying it cannot see any pull requests.
 
 Every `${VAR}` in `mcp.json` must be set — a missing one stops the start
 rather than sending Notion the literal string `${NOTION_TOKEN}`. A server you
