@@ -36,6 +36,7 @@ KEYS = (
     "database_url",
     "memory_namespace",
     "profile",
+    "mods",
     "max_concurrent_turns",
     "disabled_tools",
 )
@@ -62,6 +63,10 @@ class Config:
     # its memory namespace. A name in `profiles_dir`, or one of the built-ins
     # (`terminal`, `email`). See profile.py.
     profile: str = ""
+    # Mods that run on every route, comma-separated, whatever a profile adds.
+    # A mod stands between the model and a tool and may refuse the call; see
+    # mods.py. Named here, it cannot be dropped by a profile.
+    mods: str = ""
     # Messages a host works on at once (one conversation still runs in order).
     max_concurrent_turns: int = 4
     # Tools removed everywhere, comma-separated, patterns allowed. The
@@ -89,6 +94,10 @@ class Config:
         return self.home / "profiles"
 
     @property
+    def mods_dir(self) -> Path:
+        return self.home / "mods"
+
+    @property
     def state_db(self) -> Path:
         return self.home / "state.db"
 
@@ -114,6 +123,7 @@ class Config:
             cfg.memories_dir,
             cfg.skills_dir,
             cfg.profiles_dir,
+            cfg.mods_dir,
             cfg.shell_state_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)

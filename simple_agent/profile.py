@@ -13,6 +13,8 @@ named and in one object:
 * ``learning`` — may a conversation on this route write long-term memory and
   skills, which every *other* conversation then reads?
 * ``namespace`` — whose long-term memory it reads and writes.
+* ``mods`` — the policy files that may refuse or reshape a tool call on this
+  route, on top of the deployment's own.  See :mod:`simple_agent.mods`.
 * ``settings`` — what the route's transport needs (``imap_host`` and friends).
 
 Two are built in: ``terminal`` (full tools, learning on) and ``email``
@@ -24,6 +26,7 @@ profile, in the same frontmatter-plus-body shape as a skill::
     tools: skill_view, google__*_list
     learning: false
     namespace: support
+    mods: redact-secrets
     imap_host: imap.gmail.com
     imap_user: support@example.com
     email_allow: "@example.com"
@@ -104,6 +107,7 @@ class Profile:
     tools: tuple[str, ...] | None = None  # None = every tool the config allows
     learning: bool = True
     namespace: str = ""  # empty = the config's memory_namespace
+    mods: tuple[str, ...] = ()  # on top of config.mods; see mods.py
     settings: Mapping[str, str] = field(default_factory=dict)
 
     def setting(self, key: str, default: str = "") -> str:
@@ -171,6 +175,8 @@ def _from_file(profile: Profile, text: str) -> Profile:
             continue  # the file name is the name; a description has nowhere to go
         if key == "tools":
             fields["tools"] = _as_tools(value)
+        elif key == "mods":
+            fields["mods"] = _as_list(value)
         elif key == "learning":
             fields["learning"] = _as_bool(value)
         elif key == "namespace":
@@ -194,6 +200,9 @@ def _from_env(profile: Profile) -> Profile:
     namespace = os.environ.get(prefix + "NAMESPACE")
     if namespace:
         fields["namespace"] = namespace
+    mods = os.environ.get(prefix + "MODS")
+    if mods is not None:
+        fields["mods"] = _as_list(mods)
     return replace(profile, **fields) if fields else profile
 
 
@@ -202,6 +211,10 @@ def _as_tools(value: str) -> tuple[str, ...] | None:
     value = value.strip()
     if value.lower() in ALL_TOOLS:
         return None
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def _as_list(value: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 

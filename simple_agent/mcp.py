@@ -33,9 +33,12 @@ def build_tool_registry(
     """The toolset an Agent on this profile would get, narrowed to ``tools``.
 
     Both narrowings apply, in that order: a profile that withholds the
-    terminal cannot have it handed back by ``--tools``.
+    terminal cannot have it handed back by ``--tools``.  The profile's mods
+    come along too, so a rule about calling a tool holds for the borrowing
+    harness exactly as it does here.
     """
     from .memory import open_memory
+    from .mods import load_mods
     from .profile import load_profile
     from .skills import open_skills
     from .state import open_store
@@ -47,6 +50,7 @@ def build_tool_registry(
         open_memory(config, profile.namespace),
         open_skills(config),
         open_store(config),
+        mods=load_mods(config, profile.mods),
     )
     if profile.tools is not None:
         registry = registry.subset(list(profile.tools))

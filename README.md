@@ -10,13 +10,17 @@ forking the rest. simple-agent takes the opposite bet. The core is a few
 thousand lines of standard-library Python, and every layer around it sits behind
 a small interface you can replace from config.
 
+New here? [INTRODUCTION.md](INTRODUCTION.md) walks through the whole agent — the
+loop, the tools, the three memory layers, and what production needs — assuming
+you have never read an agent implementation before.
+
 ## How it compares
 
 |                        | simple-agent      | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | [OpenClaw](https://github.com/openclaw/openclaw) |
 | ---------------------- | ----------------- | ------------------ | ------------------ |
 | Language               | Python            | Python             | TypeScript         |
 | Runtime dependencies   | **0**             | 45                 | 66                 |
-| Lines of code¹         | **~6.2k**         | ~887k              | ~4.4M              |
+| Lines of code¹         | **~6.4k**         | ~887k              | ~4.4M              |
 | License                | MIT               | MIT                | MIT                |
 
 ¹ Non-test source lines: simple-agent on 2026-10-06, the other two on
@@ -47,6 +51,7 @@ Python 3.10+. No other dependencies.
 | Who the agent is | a profile: instructions, tools, learning, namespace | `SIMPLE_AGENT_PROFILE`, `~/.simple-agent/profiles/<name>.md` |
 | Inputs / outputs | `Source` → `Router` → `Sink`; an IMAP email source is included (the terminal REPL is its own host) | code: `simple_agent/seams.py` |
 | Tools | any stdio MCP server, plus the built-ins | `~/.simple-agent/mcp.json` |
+| Tool policy | mods: refuse, rewrite or redact a tool call | `~/.simple-agent/mods/<name>.py` |
 | Storage | files under `~/.simple-agent` (default) or Postgres — transcripts, memory and skills together | `SIMPLE_AGENT_DATABASE_URL` |
 
 Settings come from environment variables or `~/.simple-agent/config.yaml`
@@ -112,6 +117,59 @@ needs no file: `SIMPLE_AGENT_SUPPORT_TOOLS`, `_LEARNING`, `_NAMESPACE` for the
 fields and `SIMPLE_AGENT_IMAP_HOST`, `SIMPLE_AGENT_EMAIL_ALLOW` for the
 settings. A password is read from the environment only, never from the file, so
 a profile is safe to commit.
+
+## Mods: a say in every tool call
+
+Every other seam here is something you implement — a provider translates, a
+Source receives, a tool acts. A mod is the one thing none of them can be: a
+decision about a tool call that neither the model nor the tool should be
+trusted to make. *Never `rm -rf` on this route. Strip the token out of
+whatever the shell prints. Rewrite that path so it cannot leave the project.*
+
+A mod is a file at `~/.simple-agent/mods/<name>.py` with either hook, or both:
+
+```python
+def before_tool(name, arguments):
+    if name == "terminal" and "rm -rf" in arguments.get("command", ""):
+        return Deny("rm -rf is not allowed here")
+    return None                                  # no opinion
+
+def after_tool(name, arguments, output, is_error):
+    return output.replace(TOKEN, "[redacted]")   # what the model will read
+```
+
+`before_tool` returns `None`, a `Deny` (already in scope; importing it works
+too), or replacement `arguments`. A refusal reaches the model as an ordinary
+error result, so it reads why and carries on. Mods run in the order they are
+named, each seeing what the last one decided.
+
+A profile names the mods for its route and `SIMPLE_AGENT_MODS` names the ones
+that run everywhere, which a profile cannot drop:
+
+```markdown
+---
+tools: '*'
+mods: no-rm, redact-secrets
+---
+```
+
+`ToolRegistry.call` is the only path from a tool call to an action — the loop,
+the background reviewer, the REPL's slash commands and `--mcp` all go through
+it — so a rule written once holds whoever asked, including a harness borrowing
+the toolset over MCP.
+
+**The two hooks fail in opposite directions, deliberately.** A `before_tool`
+that raises *denies* the call, and a mod a profile names but that is missing
+stops the agent at startup: a policy that crashed has approved nothing. An
+`after_tool` that raises is ignored and the original output stands, because it
+only shapes what the model reads and a lost redaction pass should not cost the
+turn.
+
+Two things to know before writing one. A mod is Python in this process, not an
+MCP server in another — it is trusted code with the agent's own powers, so a
+mod is something you wrote or read, never something you installed. And
+read-only tools fan out across threads, so a hook must be safe to call from
+several at once.
 
 ## Use from another harness
 
