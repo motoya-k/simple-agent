@@ -147,10 +147,22 @@ class Route:
     ``profile`` is who the agent is on this route: its instructions, its
     toolset, whether it may write long-term memory, and whose memory it reads.
     ``None`` takes the host config's profile.  See :mod:`simple_agent.profile`.
+
+    ``voice`` is who words the answer: a profile whose instructions are about
+    how to speak, not what to do.  With one, the agent's text is a draft and
+    the host's :class:`Voice` rewrites it before it is delivered.  ``None``
+    sends what the agent wrote, as written.
+
+    ``work=False`` means nobody works on this message — no agent, no tools, no
+    transcript — and the voice answers it alone.  It is how a host says "not
+    here" or "not for you" instead of saying nothing.  It needs a ``voice``;
+    without one the message is dropped, as if no route had taken it.
     """
 
     to: tuple[Destination, ...] = ()
     profile: Profile | None = None
+    voice: Profile | None = None
+    work: bool = True
 
 
 class Router(ABC):
@@ -176,3 +188,31 @@ class Router(ABC):
         is right for a route that does not answer anyone.
         """
         return False
+
+
+class Voice(ABC):
+    """Words what goes out. It never works on anything.
+
+    The agent that does the work and the layer that talks are two jobs.  One
+    needs the big model, the tools and the long instructions about what it may
+    touch; the other needs to be quick, and to know how this place likes to be
+    spoken to.  Keeping them in one prompt means the rules of tone compete with
+    the rules of work for the same attention, and a message nobody will work on
+    gets no answer at all, because the only thing that can speak is the thing
+    that was not started.
+
+    ``speak`` is called from a worker thread, like ``Agent.run``.  It has no
+    tools and keeps no history: it sees one message and, when there is one, the
+    draft written in answer to it.
+
+    * ``draft`` is ``None`` — nobody worked on the message (``Route.work`` is
+      false).  Say so, in the way ``profile`` describes.
+    * ``draft`` is text — the agent's answer.  Return what should be posted
+      instead.
+
+    Raising is how a voice says "send the draft as it is": the host delivers
+    the agent's own words rather than lose an answer that cost a turn.
+    """
+
+    @abstractmethod
+    def speak(self, message: InboundMessage, profile: Profile, draft: str | None) -> str: ...

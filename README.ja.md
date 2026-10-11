@@ -188,6 +188,32 @@ Socket Mode なので接続は内側から外へ出ていくだけです。公�
 
 メールと同じく、ワークスペースも**信頼できない入力**です。そこにいる人は誰でも書き込めます。`slack` プロファイルは読み取り専用で `learning: false`、`slack_allow` は防御線ではなくコストの線引きです。
 
+## Voice: 答えを言葉にする層
+
+仕事をするエージェントと、話す層は別の仕事です。前者には大きいモデルと道具と「何に触ってよいか」の指示が要り、後者には速さと「この場所ではどう話すか」が要ります。host はこの 2 つを分けられます。
+
+```python
+from simple_agent.providers import get_provider
+from simple_agent.voice import ProviderVoice
+
+tone = load_profile(config, "voice")          # profiles/voice.md: 話し方
+host = Host(
+    config,
+    sources=[...], sinks=[...],
+    router=FirstMatch((
+        MembersOnly(allow=("C0123",), profile=work, voice=tone),          # 仕事をして、言葉を整える
+        SlackRouter(allow=("C0123",), voice=tone, work=False),            # 「対応できません」と返す
+    )),
+    voice=ProviderVoice(get_provider("anthropic"), model="claude-haiku-4-5"),
+)
+```
+
+- **`Route.voice`** は、話し方だけを書いた profile です。エージェントが書いた文章は下書きになり、voice (小さいモデルを 1 回呼ぶだけ。道具も履歴も無い) が書き直してから届けます。文体のルールを、仕事のプロンプトから外せます。
+- **`Route.work = False`** は「このメッセージには誰も取りかからない」です。エージェントも道具も transcript もありません。voice だけが答えるので、手前の router が通さなかった相手に、無言ではなく「対応できません」を返せます。この route は stop の言葉を認識しません。
+- **voice は答えを失わせません。** 呼び出しが失敗した、トークンが尽きた、下書きにあった数字・リンク・メンションが消えた、のどれでも、下書きをそのまま届けます。4,000 文字を超える下書きは書き直しません。長い答えは表や数字で、書き直しで壊れるのはそこだからです。
+
+transcript に残るのはエージェント自身の文章で、voice の文章ではありません。モデルは voice profile の `voice_model` (または `SIMPLE_AGENT_VOICE_MODEL`) で選びます。
+
 ## スケジュール
 
 ジョブは `~/.simple-agent/schedules/` に置くファイル 1 つです。形式はスキルやプロファイルと同じで、フロントマターの下が本文（プロンプト）です。

@@ -54,21 +54,33 @@ class SlackRouter(Router):
     normally the answer would already be in the channel — so the host asks
     about it as it arrives.  The work still finishes; only the answer is
     dropped.
+
+    ``voice`` names the profile that words the answers (see
+    :class:`~simple_agent.seams.Voice`).  ``work=False`` makes this the router
+    for the conversations that get an answer but no agent: put it after the
+    one that does the work, with a wider ``allow``, and whoever the first one
+    turned away is told so by the voice instead of being met with silence.
+    Such a router recognizes no stop words — a stop from somebody the agent
+    does not work for must not drop an answer to somebody it does.
     """
 
     allow: tuple[str, ...] = ()
     profile: Profile = BUILT_IN["slack"]
     thread_replies: bool = True
     reply: bool = True
+    voice: Profile | None = None
+    work: bool = True
 
     def route(self, message: InboundMessage) -> Route | None:
         if message.platform != PLATFORM or not self._allowed(message):
             return None
         if not self.reply:
-            return Route(profile=self.profile)
+            return Route(profile=self.profile, voice=self.voice, work=self.work)
         return Route(
             to=(Destination(PLATFORM, message.chat_id, self._thread(message)),),
             profile=self.profile,
+            voice=self.voice,
+            work=self.work,
         )
 
     def _thread(self, message: InboundMessage) -> str:
@@ -85,7 +97,7 @@ class SlackRouter(Router):
 
     def stops(self, message: InboundMessage) -> bool:
         words = self.stop_words()
-        if not words or message.platform != PLATFORM or not self._allowed(message):
+        if not self.work or not words or message.platform != PLATFORM or not self._allowed(message):
             return False
         return message.text.strip().strip(_TRAILING).casefold() in words
 
