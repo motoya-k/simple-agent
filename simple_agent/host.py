@@ -48,6 +48,11 @@ And one about who speaks:
   nobody will work on (``Route.work`` false), so "not for you" is something the
   host can say rather than a silence.  A voice that fails never costs an
   answer: the draft goes out as written.
+* **The voice may speak first.**  On a route with ``Route.ack`` it says, as
+  the turn starts, that the message was taken and what it is taken to be
+  asking.  It runs beside the turn and never holds it up, and it is not sent
+  once the answer is ready: an acknowledgement that arrives after the answer
+  is noise.
 """
 
 from __future__ import annotations
@@ -321,6 +326,7 @@ class Host:
                 await sink.on_turn_start(message, to)
         ok = False
         text = ""
+        ack = self._start_ack(message, route)
         try:
             with self.agents.lease(key):
                 self._live[key] = agent
@@ -332,6 +338,7 @@ class Host:
         except Exception:
             log.exception("turn failed for %s", message.message_id)
         finally:
+            await self._settle_ack(ack)
             for to in route.to:
                 sink = self.sinks.get(to.platform)
                 if sink is not None:
@@ -340,6 +347,53 @@ class Host:
         if ok and text and self._wanted(message):
             await self._deliver(message, route, await self._voiced(message, route, text))
         return text if ok else None
+
+    # -- the voice speaking first ---------------------------------------
+    def _start_ack(self, message: InboundMessage, route: Route):
+        """Start the acknowledgement beside the turn, or return None.
+
+        A task rather than an await: the point is that the agent is not kept
+        waiting for a courtesy.
+        """
+        if not route.ack or self.voice is None or route.voice is None or not route.to:
+            return None
+        state = {"closed": False, "sending": False}
+        return asyncio.create_task(self._acknowledge(message, route, state)), state
+
+    async def _acknowledge(self, message: InboundMessage, route: Route, state: dict) -> None:
+        try:
+            text = await asyncio.to_thread(self.voice.acknowledge, message, route.voice)
+        except Exception as exc:
+            log.info("no acknowledgement for %s: %s", message.message_id, exc)
+            return
+        # Closed: the turn is over, so what would follow this line is already
+        # on its way. Unwanted: the conversation said stop.
+        if not text or state["closed"] or not self._wanted(message):
+            return
+        state["sending"] = True
+        for to in route.to:
+            sink = self.sinks.get(to.platform)
+            if sink is None:
+                continue
+            try:
+                await sink.send(to, text)
+            except Exception as exc:
+                # Not a dead letter: nobody goes looking for a lost "on it".
+                log.info("acknowledgement to %s not delivered: %s", to.platform, exc)
+
+    async def _settle_ack(self, ack) -> None:
+        """The turn is over: the acknowledgement is either out, or never will be.
+
+        One already being posted is waited for, so it lands before the answer
+        and not after it. One still being written is abandoned.
+        """
+        if ack is None:
+            return
+        task, state = ack
+        state["closed"] = True
+        if not state["sending"]:
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _answer_unworked(self, message: InboundMessage, route: Route) -> str | None:
         """Answer a message nobody will work on, in the voice alone.

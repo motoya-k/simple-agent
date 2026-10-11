@@ -315,6 +315,12 @@ host = Host(
   tools, no transcript. The voice answers it alone, so whoever a narrower
   router turned away is told so instead of being met with silence. Such a route
   recognizes no stop words.
+- **`Route.ack = True`** has the voice speak first: as the turn starts it posts
+  one short line saying the message was taken and what it takes the request to
+  be, while the agent is still starting. It runs beside the turn and never
+  holds it up, and it is dropped if the answer is ready first. It is written
+  before any work exists, so it says what was understood — not what the agent
+  plans, and not what it will find.
 - **A voice never costs an answer.** If the call fails, runs out of tokens, or
   comes back without a number, link or mention that was in the draft, the draft
   goes out as written. A draft over 4,000 characters is not rewritten at all —

@@ -62,6 +62,9 @@ class SlackRouter(Router):
     turned away is told so by the voice instead of being met with silence.
     Such a router recognizes no stop words — a stop from somebody the agent
     does not work for must not drop an answer to somebody it does.
+
+    ``ack=True`` has the voice post a line in the thread as the turn starts,
+    saying what it takes the question to be, before the answer exists.
     """
 
     allow: tuple[str, ...] = ()
@@ -70,17 +73,19 @@ class SlackRouter(Router):
     reply: bool = True
     voice: Profile | None = None
     work: bool = True
+    ack: bool = False
 
     def route(self, message: InboundMessage) -> Route | None:
         if message.platform != PLATFORM or not self._allowed(message):
             return None
         if not self.reply:
-            return Route(profile=self.profile, voice=self.voice, work=self.work)
+            return Route(profile=self.profile, voice=self.voice, work=self.work, ack=self.ack)
         return Route(
             to=(Destination(PLATFORM, message.chat_id, self._thread(message)),),
             profile=self.profile,
             voice=self.voice,
             work=self.work,
+            ack=self.ack,
         )
 
     def _thread(self, message: InboundMessage) -> str:

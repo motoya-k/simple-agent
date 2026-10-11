@@ -9,6 +9,7 @@ no agent at all — the voice answers it alone, or nobody does.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -241,3 +242,122 @@ def test_a_long_draft_is_never_sent_to_the_model():
     with pytest.raises(VoiceError):
         voice.speak(message(), TONE, "x" * 51)
     assert provider.requests == []
+
+
+# -- speaking first -------------------------------------------------------
+class AckVoice(FakeVoice):
+    """Acknowledges with "on it", optionally only once `gate` is set."""
+
+    def __init__(self, gate: threading.Event | None = None, fail=False):
+        super().__init__()
+        self.gate, self.ack_fail = gate, fail
+        self.acked: list[str] = []
+
+    def acknowledge(self, message, profile):
+        self.acked.append(message.text)
+        if self.gate is not None:
+            self.gate.wait(5)
+        if self.ack_fail:
+            raise RuntimeError("the small model is down")
+        return "on it"
+
+
+class WaitingAgent(FakeAgent):
+    """Does not finish until `until` is set — a turn that takes a while."""
+
+    def __init__(self, until: threading.Event):
+        super().__init__()
+        self.until = until
+
+    def run(self, text):
+        self.until.wait(5)
+        return super().run(text)
+
+
+class SignalingRecorder(Recorder):
+    def __init__(self):
+        super().__init__()
+        self.first = threading.Event()
+
+    async def send(self, to, text):
+        await super().send(to, text)
+        self.first.set()
+
+
+def test_the_voice_speaks_first_while_the_agent_works(config):
+    sink = SignalingRecorder()
+    host = Host(
+        config, sources=[], sinks=[sink],
+        router=SlackRouter(allow=("*",), voice=TONE, ack=True),
+        agent_factory=lambda cfg, **kw: WaitingAgent(sink.first),
+        voice=AckVoice(),
+    )
+
+    asyncio.run(host.handle(message("close the books")))
+
+    assert sink.sent == ["on it", "voiced: the draft"]
+
+
+def test_an_acknowledgement_slower_than_the_answer_is_never_sent(config):
+    gate = threading.Event()
+    voice = AckVoice(gate)
+    host, sink, _ = make_host(
+        config, SlackRouter(allow=("*",), voice=TONE, ack=True), voice=voice
+    )
+
+    async def run():
+        await host.handle(message())
+        gate.set()  # the small model answers now, too late
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+
+    assert sink.sent == ["voiced: the draft"]
+
+
+def test_a_failed_acknowledgement_costs_nothing(config):
+    host, sink, _ = make_host(
+        config, SlackRouter(allow=("*",), voice=TONE, ack=True), voice=AckVoice(fail=True)
+    )
+
+    asyncio.run(host.handle(message()))
+
+    assert sink.sent == ["voiced: the draft"] and sink.turns == [True]
+    assert not list(config.home.glob("dead_letters*"))
+
+
+def test_nothing_is_acknowledged_unless_the_route_asks(config):
+    voice = AckVoice()
+    host, sink, _ = make_host(config, SlackRouter(allow=("*",), voice=TONE), voice=voice)
+    asyncio.run(host.handle(message()))
+
+    unworked = AckVoice()
+    host2, sink2, _ = make_host(
+        config, SlackRouter(allow=("*",), voice=TONE, work=False, ack=True), voice=unworked
+    )
+    asyncio.run(host2.handle(message()))
+
+    assert voice.acked == [] and unworked.acked == []
+    assert sink.sent == ["voiced: the draft"] and sink2.sent == ["sorry, not for you"]
+
+
+def test_a_voice_that_cannot_acknowledge_says_nothing(config):
+    """The seam's default: a voice written before this existed still works."""
+    host, sink, _ = make_host(
+        config, SlackRouter(allow=("*",), voice=TONE, ack=True), voice=FakeVoice()
+    )
+
+    asyncio.run(host.handle(message()))
+
+    assert sink.sent == ["voiced: the draft"]
+
+
+def test_the_included_voice_acknowledges_in_one_short_call():
+    provider = FakeProvider("Looking into the October invoices.")
+    voice = ProviderVoice(provider, model="small")
+
+    assert voice.acknowledge(message("october invoices?"), TONE).startswith("Looking")
+    request = provider.requests[0]
+    assert request["system"] == "Short and polite." and request["tools"] == []
+    assert request["max_tokens"] <= 200
+    assert "october invoices?" in request["messages"][0]["content"]
