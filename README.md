@@ -284,6 +284,45 @@ Like mail, a workspace is **untrusted input**: anyone in it can type. The `slack
 profile is read-only with `learning: false`, and `slack_allow` is a cost filter,
 not a boundary.
 
+## A voice: who words the answer
+
+The agent that does the work and the layer that talks are two jobs. One needs
+the big model, the tools, and instructions about what it may touch. The other
+needs to be quick and to know how this place likes to be spoken to. A host can
+split them:
+
+```python
+from simple_agent.providers import get_provider
+from simple_agent.voice import ProviderVoice
+
+tone = load_profile(config, "voice")          # profiles/voice.md: how to speak
+host = Host(
+    config,
+    sources=[...], sinks=[...],
+    router=FirstMatch((
+        MembersOnly(allow=("C0123",), profile=work, voice=tone),          # worked on, then worded
+        SlackRouter(allow=("C0123",), voice=tone, work=False),            # told "not for you"
+    )),
+    voice=ProviderVoice(get_provider("anthropic"), model="claude-haiku-4-5"),
+)
+```
+
+- **`Route.voice`** names a profile whose instructions are about tone, not
+  work. What the agent wrote becomes a draft, and the voice — one call to a
+  small model, no tools, no history — rewrites it before it is delivered. The
+  rules of style leave the work prompt.
+- **`Route.work = False`** means nobody works on the message: no agent, no
+  tools, no transcript. The voice answers it alone, so whoever a narrower
+  router turned away is told so instead of being met with silence. Such a route
+  recognizes no stop words.
+- **A voice never costs an answer.** If the call fails, runs out of tokens, or
+  comes back without a number, link or mention that was in the draft, the draft
+  goes out as written. A draft over 4,000 characters is not rewritten at all —
+  long answers are tables and figures, which is what a rewrite damages.
+
+The transcript keeps the agent's own words, not the voice's. `voice_model` in
+the voice profile (or `SIMPLE_AGENT_VOICE_MODEL`) picks the model.
+
 ## Schedules
 
 A job is a file in `~/.simple-agent/schedules/`, the same shape as a skill or a

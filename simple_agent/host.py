@@ -38,6 +38,16 @@ And three that make it safe to run unattended in a container:
   arrives, outside the lock, and an answer whose conversation was stopped is
   dropped instead of delivered.  The turn itself still runs to the end — see
   ``Agent.interrupt`` for stopping the work, which this does not do.
+
+And one about who speaks:
+
+* **The agent works; a voice may word the answer.**  A route can name a voice
+  profile (``Route.voice``), and then what the agent wrote is a draft: the
+  host's :class:`~simple_agent.seams.Voice` — a small, fast model with no tools
+  — rewrites it before it is delivered.  The same voice answers a message
+  nobody will work on (``Route.work`` false), so "not for you" is something the
+  host can say rather than a silence.  A voice that fails never costs an
+  answer: the draft goes out as written.
 """
 
 from __future__ import annotations
@@ -53,7 +63,7 @@ from typing import Iterable
 
 from .profile import BUILT_IN, Profile, load_profile
 from .registry import AgentRegistry
-from .seams import Destination, InboundMessage, Route, Router, Sink, Source
+from .seams import Destination, InboundMessage, Route, Router, Sink, Source, Voice
 
 log = logging.getLogger(__name__)
 
@@ -146,10 +156,12 @@ class Host:
         sinks: Iterable[Sink] = (),
         agent_factory=None,
         dead_letters: DeadLetters | None = None,
+        voice: Voice | None = None,
     ) -> None:
         self.config = config
         self.sources = list(sources)
         self.router = router
+        self.voice = voice
         self.sinks = {sink.platform: sink for sink in sinks}
         self.dead_letters = dead_letters or DeadLetters(config.home / "dead_letters.jsonl")
         self._factory = agent_factory or self._default_factory
@@ -291,6 +303,8 @@ class Host:
         if route is None:
             log.info("dropped %s from %s (no route)", message.message_id, message.user_id)
             return None
+        if not route.work:
+            return await self._answer_unworked(message, route)
 
         profile = route.profile or load_profile(self.config)
         key = message.session_key(profile=profile.namespace or self.config.memory_namespace)
@@ -324,8 +338,53 @@ class Host:
                     await sink.on_turn_end(message, to, ok)
 
         if ok and text and self._wanted(message):
-            await self._deliver(message, route, text)
+            await self._deliver(message, route, await self._voiced(message, route, text))
         return text if ok else None
+
+    async def _answer_unworked(self, message: InboundMessage, route: Route) -> str | None:
+        """Answer a message nobody will work on, in the voice alone.
+
+        No agent is built and nothing is written to a transcript: the person is
+        not in a conversation with the agent, they are being told so.  Without
+        a voice there is nothing to say it with, and the message is dropped
+        like one no route took.
+        """
+        if self.voice is None or route.voice is None:
+            log.info("dropped %s from %s (not worked on, no voice)", message.message_id, message.user_id)
+            return None
+        for to in route.to:
+            sink = self.sinks.get(to.platform)
+            if sink is not None:
+                await sink.on_turn_start(message, to)
+        text = ""
+        try:
+            text = await asyncio.to_thread(self.voice.speak, message, route.voice, None)
+        except Exception:
+            log.exception("voice failed for %s", message.message_id)
+        finally:
+            for to in route.to:
+                sink = self.sinks.get(to.platform)
+                if sink is not None:
+                    await sink.on_turn_end(message, to, bool(text))
+        if not text:
+            return None
+        log.info("answered %s from %s without working on it", message.message_id, message.user_id)
+        await self._deliver(message, route, text)
+        return text
+
+    async def _voiced(self, message: InboundMessage, route: Route, draft: str) -> str:
+        """The draft as the route's voice words it, or the draft itself.
+
+        The draft cost a turn and is already a complete answer, so nothing that
+        goes wrong here is allowed to lose it.
+        """
+        if self.voice is None or route.voice is None:
+            return draft
+        try:
+            return await asyncio.to_thread(self.voice.speak, message, route.voice, draft) or draft
+        except Exception as exc:
+            log.warning("voice passed on %s, sending the draft: %s", message.message_id, exc)
+            return draft
 
     def _wanted(self, message: InboundMessage) -> bool:
         """False when this conversation said stop while the answer was being written.
