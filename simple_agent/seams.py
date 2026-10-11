@@ -157,12 +157,17 @@ class Route:
     transcript — and the voice answers it alone.  It is how a host says "not
     here" or "not for you" instead of saying nothing.  It needs a ``voice``;
     without one the message is dropped, as if no route had taken it.
+
+    ``ack=True`` has the voice say, the moment the turn starts, that the
+    message was taken and what it is taken to be asking — while the agent is
+    still starting.  It needs a ``voice`` and somewhere to say it (``to``).
     """
 
     to: tuple[Destination, ...] = ()
     profile: Profile | None = None
     voice: Profile | None = None
     work: bool = True
+    ack: bool = False
 
 
 class Router(ABC):
@@ -212,7 +217,18 @@ class Voice(ABC):
 
     Raising is how a voice says "send the draft as it is": the host delivers
     the agent's own words rather than lose an answer that cost a turn.
+
+    ``acknowledge`` is the other thing a quick model is for: the line that goes
+    out the moment a turn starts (``Route.ack``), so the person knows they were
+    heard and what the agent takes the request to be, minutes before the answer
+    exists.  It is written without knowing what the agent will find, or even
+    what it is able to do — so it says what was understood, never what will be
+    delivered.  Returning ``""`` (the default) says nothing, and so does
+    raising: an acknowledgement is a courtesy, and nothing waits for it.
     """
 
     @abstractmethod
     def speak(self, message: InboundMessage, profile: Profile, draft: str | None) -> str: ...
+
+    def acknowledge(self, message: InboundMessage, profile: Profile) -> str:
+        return ""
