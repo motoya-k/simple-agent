@@ -280,6 +280,18 @@ broke"* is a question. The work itself still finishes — this cancels the answe
 not the turn — and `stop_words` in the profile replaces the list, or `none`
 turns it off.
 
+**Token rotation.** An app with token rotation turned on (it cannot be turned
+off again) has an app-level token that starts with `xoxe.xapp-` and dies after
+twelve hours. Give the host the refresh token and the app's credentials too —
+`SIMPLE_AGENT_SLACK_APP_REFRESH_TOKEN`, `SIMPLE_AGENT_SLACK_CLIENT_ID`,
+`SIMPLE_AGENT_SLACK_CLIENT_SECRET` — and the token in the environment becomes
+only the seed: the one in use lives in the `slack_integration` table beside the
+transcripts and is traded for the next before it expires. A refresh token is
+spent by using it, so the trade is made under a database lock (two tasks during
+a deploy make one trade, not two), and the stored pair wins over the
+environment until somebody puts a *new* seed there. The tokens are stored as
+they are, so the database is as secret as they were.
+
 Like mail, a workspace is **untrusted input**: anyone in it can type. The `slack`
 profile is read-only with `learning: false`, and `slack_allow` is a cost filter,
 not a boundary.

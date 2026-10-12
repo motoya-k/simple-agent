@@ -37,9 +37,10 @@ from typing import Any, AsyncIterator
 
 from ..seams import InboundMessage, Source
 from . import ws
-from .api import SlackApi
+from .api import SlackApi, SlackError
 from .inbox import Inbox
 from .parse import PLATFORM, parse_event
+from .tokens import EXPIRED, RotatingToken
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class SlackSource(Source):
     def __init__(
         self,
         *,
-        app_token: str,
+        app_token: str | RotatingToken,
         bot_token: str,
         inbox: Inbox,
         require_mention: bool = True,
@@ -64,7 +65,10 @@ class SlackSource(Source):
         read_timeout: float = 60.0,
     ) -> None:
         self._api = api or SlackApi(bot_token)
-        self._app_api = app_api or SlackApi(app_token)
+        #: An app-level token that expires (token rotation) is asked for again
+        #: at every connect; a plain one is just the string it always was.
+        self._app_tokens = app_token if isinstance(app_token, RotatingToken) else None
+        self._app_api = app_api or SlackApi("" if self._app_tokens else app_token)
         self.inbox = inbox
         self.require_mention = require_mention
         self._connect = connect
@@ -146,7 +150,18 @@ class SlackSource(Source):
             queue.put_nowait(None)
 
     def _open(self) -> ws.WebSocket:
-        url = str(self._app_api.call("apps.connections.open", form=True).get("url", ""))
+        if self._app_tokens:
+            self._app_api.token = self._app_tokens.current()
+        try:
+            answer = self._app_api.call("apps.connections.open", form=True)
+        except SlackError as exc:
+            if not (self._app_tokens and exc.error in EXPIRED):
+                raise
+            # Expired sooner than its row said, or revoked by hand. Once: if
+            # the next one is refused too, the reconnect loop is the retry.
+            self._app_api.token = self._app_tokens.renew(self._app_api.token)
+            answer = self._app_api.call("apps.connections.open", form=True)
+        url = str(answer.get("url", ""))
         if not url:
             raise ws.WebSocketError("apps.connections.open returned no url")
         return self._connect(url, read_timeout=self._read_timeout)

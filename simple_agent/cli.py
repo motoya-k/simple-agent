@@ -218,7 +218,7 @@ def _email(config: Config, profile_name: str) -> Transport | None:
 
 def _slack(config: Config, profile_name: str) -> Transport | None:
     """A workspace over Socket Mode. Both tokens are secrets, so both are env-only."""
-    from .slack import SlackRouter, SlackSink, SlackSource, open_inbox
+    from .slack import SlackRouter, SlackSink, SlackSource, open_app_token, open_inbox
 
     profile = load_profile(config, profile_name or "slack")
     app_token = os.environ.get("SIMPLE_AGENT_SLACK_APP_TOKEN", "")
@@ -237,7 +237,7 @@ def _slack(config: Config, profile_name: str) -> Transport | None:
         return None
 
     source = SlackSource(
-        app_token=app_token,
+        app_token=open_app_token(config, app_token),
         bot_token=bot_token,
         inbox=open_inbox(config),
         require_mention=profile.setting("slack_require_mention", "1").lower()
